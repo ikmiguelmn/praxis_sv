@@ -96,6 +96,51 @@ it('cancela por falta de respuesta las aclaraciones vencidas (RN-010)', function
         ->and(EventoAuditoria::query()->where('tipo_evento', 'CADUCIDAD_ACLARACION')->value('rol_codigo'))->toBe('SISTEMA');
 });
 
+it('rechaza con 422 una aclaración vacía sin cambiar el estado ni guardar la respuesta', function () {
+    $this->comoRol($this->gestor, Rol::Gestor)
+        ->postJson("/api/v1/incidencias/{$this->incidencia->id}/solicitar-aclaracion", ['informacion_requerida' => 'Indique el número exacto del aula.'])
+        ->assertOk();
+
+    $this->comoRol($this->reportante, Rol::Reportante)
+        ->postJson("/api/v1/mis-solicitudes/{$this->incidencia->id}/aclaraciones", ['respuesta' => ''])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['respuesta' => 'El texto de la aclaración es obligatorio.']);
+
+    expect($this->incidencia->refresh()->estado_codigo)->toBe(EstadoIncidencia::PendienteInformacion)
+        ->and(SolicitudAclaracion::query()->sole()->respuesta_reportante)->toBeNull();
+});
+
+it('notifica al reportante la cancelación de su solicitud por falta de respuesta (RN-010)', function () {
+    $this->comoRol($this->gestor, Rol::Gestor)
+        ->postJson("/api/v1/incidencias/{$this->incidencia->id}/solicitar-aclaracion", ['informacion_requerida' => 'Indique el número exacto del aula.'])
+        ->assertOk();
+    $this->travel(10)->days();
+
+    $this->artisan('praxis:vencer-aclaraciones')->assertSuccessful();
+
+    $notificacion = NotificacionPlataforma::query()->where('usuario_destino_id', $this->reportante->id)->where('tipo', 'CANCELACION')->sole();
+    expect($notificacion)
+        ->incidencia_id->toBe($this->incidencia->id)
+        ->titulo->toBe("Tu solicitud {$this->incidencia->codigo_ticket} fue cancelada");
+});
+
+it('registra la comunicación con fecha, hora y destinatario en la trazabilidad de la incidencia (D10)', function () {
+    $this->freezeSecond();
+
+    $this->comoRol($this->gestor, Rol::Gestor)
+        ->postJson("/api/v1/incidencias/{$this->incidencia->id}/solicitar-aclaracion", ['informacion_requerida' => 'Indique el número exacto del aula.'])
+        ->assertOk();
+
+    $this->comoRol($this->gestor, Rol::Gestor)
+        ->getJson("/api/v1/incidencias/{$this->incidencia->id}/historial?categoria=COMUNICACION")
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.tipo_evento', 'COMUNICACION')
+        ->assertJsonPath('data.0.fecha_hora', now()->toIso8601String())
+        ->assertJsonPath('data.0.datos.destinatarios.0.id', $this->reportante->id)
+        ->assertJsonPath('data.0.datos.destinatarios.0.nombre', $this->reportante->name);
+});
+
 it('marca todas las notificaciones como leídas', function () {
     $this->comoRol($this->gestor, Rol::Gestor)
         ->postJson("/api/v1/incidencias/{$this->incidencia->id}/solicitar-aclaracion", ['informacion_requerida' => 'Indique el número exacto del aula.']);

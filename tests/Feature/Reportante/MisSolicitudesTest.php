@@ -64,6 +64,23 @@ it('muestra la ficha con historial público y la incidencia principal de un dupl
         ->assertJsonPath('data.acciones.puede_reabrir', false);
 });
 
+it('muestra al reportante el historial de estados en orden cronológico con fecha y observación', function () {
+    $gestor = $this->usuarioConRol(Rol::Gestor);
+    $incidencia = Incidencia::factory()->for($this->reportante, 'creador')->create();
+    $this->comoRol($gestor, Rol::Gestor)->postJson("/api/v1/incidencias/{$incidencia->id}/iniciar-revision")->assertOk();
+    $this->travel(1)->hours();
+    $this->comoRol($gestor, Rol::Gestor)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/solicitar-aclaracion", ['informacion_requerida' => 'Indique el número exacto del aula.'])
+        ->assertOk();
+
+    $respuesta = $this->comoRol($this->reportante, Rol::Reportante)->getJson("/api/v1/mis-solicitudes/{$incidencia->id}");
+
+    $respuesta->assertOk()->assertJsonPath('data.historial.*.estado_nuevo.codigo', ['E03', 'E02']);
+    $fechas = $respuesta->json('data.historial.*.fecha_hora');
+    expect($fechas)->each->not->toBeNull()
+        ->and($fechas[0] < $fechas[1])->toBeTrue();
+});
+
 it('responde 404 al consultar solicitudes de otros usuarios (anti-IDOR)', function () {
     $ajena = Incidencia::factory()->create();
 

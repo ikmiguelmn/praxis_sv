@@ -6,6 +6,7 @@ use App\Enums\Urgencia;
 use App\Models\CategoriaIncidencia;
 use App\Models\EspacioFisico;
 use App\Models\EventoAuditoria;
+use App\Models\Evidencia;
 use App\Models\Incidencia;
 use App\Models\NotificacionPlataforma;
 use App\Models\User;
@@ -122,6 +123,20 @@ it('rechaza archivos cuyo contenido real no es JPG, PNG, WEBP ni PDF aunque la e
         ->assertUnprocessable()
         ->assertJsonPath('errors', ['archivos.0' => ['Formato no permitido. Solo se aceptan imágenes JPG, PNG, WEBP o documentos PDF']]);
 });
+
+it('rechaza con 422 ejecutables y comprimidos sin almacenarlos', function (string $nombre, string $contenido) {
+    $archivo = UploadedFile::fake()->createWithContent($nombre, $contenido);
+
+    $this->comoRol($this->reportante, Rol::Reportante)
+        ->post('/api/v1/incidencias/evidencias/upload', ['archivos' => [$archivo]], ['Accept' => 'application/json'])
+        ->assertUnprocessable()
+        ->assertJsonPath('errors', ['archivos.0' => ['Formato no permitido. Solo se aceptan imágenes JPG, PNG, WEBP o documentos PDF']]);
+
+    expect(Evidencia::query()->count())->toBe(0);
+})->with([
+    'ejecutable .exe' => ['instalador.exe', "MZ\x90\x00\x03\x00\x00\x00 programa"],
+    'comprimido .zip' => ['script.zip', "PK\x03\x04\x14\x00 contenido comprimido"],
+]);
 
 it('acepta PDF y WEBP reales y limita tamaño y cantidad de archivos', function () {
     $pdf = UploadedFile::fake()->createWithContent('acta.pdf', "%PDF-1.7\n%contenido");

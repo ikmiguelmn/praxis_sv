@@ -29,6 +29,19 @@ it('cancela la solicitud antes de la asignación técnica con motivo obligatorio
         ->and(EventoAuditoria::query()->where('incidencia_id', $incidencia->id)->where('estado_nuevo', 'E17')->exists())->toBeTrue();
 })->with([EstadoIncidencia::Registrada, EstadoIncidencia::PendienteInformacion, EstadoIncidencia::EnRevision, EstadoIncidencia::EnClasificacion]);
 
+it('rechaza con 422 la cancelación sin motivo y conserva el estado de la solicitud', function () {
+    $incidencia = Incidencia::factory()->for($this->reportante, 'creador')->enEstado(EstadoIncidencia::Registrada)->create();
+
+    $this->comoRol($this->reportante, Rol::Reportante)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/cancelar-solicitante", ['motivo' => ''])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['motivo' => 'El motivo es obligatorio.']);
+
+    expect($incidencia->refresh())
+        ->estado_codigo->toBe(EstadoIncidencia::Registrada)
+        ->motivo_cancelacion->toBeNull();
+});
+
 it('impide cancelar cuando ya hay personal técnico asignado', function () {
     $incidencia = Incidencia::factory()->for($this->reportante, 'creador')->enEstado(EstadoIncidencia::PendienteInspeccion)->create();
 
@@ -59,6 +72,19 @@ it('reabre dentro de la ventana de garantía hacia En corrección con prioridad 
     expect($incidencia->prioridad->codigo)->toBe('ALTA')
         ->and($incidencia->fecha_cierre)->toBeNull()
         ->and(NotificacionPlataforma::query()->where('usuario_destino_id', $coordinador->id)->where('tipo', 'REAPERTURA')->exists())->toBeTrue();
+});
+
+it('asienta la reapertura en el historial con el motivo del reportante', function () {
+    $incidencia = Incidencia::factory()->for($this->reportante, 'creador')->cerradaHace(2)->create();
+
+    $this->comoRol($this->reportante, Rol::Reportante)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/reabrir", ['motivo' => 'El lavamanos volvió a gotear por la base tras usarlo esta mañana'])
+        ->assertOk();
+
+    $evento = EventoAuditoria::query()->where('incidencia_id', $incidencia->id)->where('estado_anterior', 'E15')->sole();
+    expect($evento)
+        ->usuario_id->toBe($this->reportante->id)
+        ->motivo->toBe('El lavamanos volvió a gotear por la base tras usarlo esta mañana');
 });
 
 it('reabre hacia Pendiente de asignación cuando no hubo intervención técnica', function () {

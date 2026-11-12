@@ -3,6 +3,7 @@
 use App\Enums\Impacto;
 use App\Enums\Rol;
 use App\Enums\Urgencia;
+use App\Models\ActividadMantenimiento;
 use App\Models\CategoriaIncidencia;
 use App\Models\EspacioFisico;
 use App\Models\EventoAuditoria;
@@ -12,6 +13,7 @@ use App\Models\User;
 use App\Services\CatalogoService;
 use App\Services\ParametrosService;
 use App\Support\Parametro;
+use Illuminate\Support\Facades\Hash;
 
 beforeEach(function () {
     $this->admin = $this->usuarioConRol(Rol::Administrador);
@@ -45,6 +47,100 @@ it('inactiva usuarios revocando sesiones y los excluye de técnicos disponibles'
     $this->comoRol($this->usuarioConRol(Rol::Coordinador), Rol::Coordinador)
         ->getJson('/api/v1/tecnicos/disponibles')
         ->assertJsonCount(0, 'data');
+});
+
+it('crea un usuario solo con el rol R02 y audita el administrador, la fecha y el motivo del alta', function () {
+    $this->freezeSecond();
+
+    $respuesta = $this->comoRol($this->admin, Rol::Administrador)
+        ->postJson('/api/v1/admin/usuarios', [
+            'nombre' => 'Gestora Nueva',
+            'email' => 'gestora@ecci.edu.co',
+            'password' => 'Clave*Segura1',
+            'roles' => ['R02'],
+            'motivo' => 'Ingreso al equipo de gestión de incidencias',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.roles.*.codigo', ['R02']);
+
+    expect(User::query()->findOrFail($respuesta->json('data.id'))->codigosRol())->toBe(['R02']);
+    $evento = EventoAuditoria::query()->where('tipo_evento', 'USUARIO_CREADO')->sole();
+    expect($evento)
+        ->usuario_id->toBe($this->admin->id)
+        ->motivo->toBe('Ingreso al equipo de gestión de incidencias')
+        ->fecha_hora->toDateTimeString()->toBe(now()->toDateTimeString());
+});
+
+it('habilita en el menú las secciones de cada rol de un usuario con R02 y R03', function () {
+    $usuario = $this->usuarioConRol(Rol::Gestor, Rol::Coordinador);
+
+    $menuGestor = $this->comoRol($usuario, Rol::Gestor)->getJson('/api/v1/navegacion/menu');
+    $menuCoordinador = $this->comoRol($usuario, Rol::Coordinador)->getJson('/api/v1/navegacion/menu');
+
+    $menuGestor->assertOk()->assertJsonPath('rol_activo', 'R02');
+    $menuCoordinador->assertOk()->assertJsonPath('rol_activo', 'R03');
+    expect($menuGestor->json('data.*.ruta'))->toContain('/revision')
+        ->and($menuCoordinador->json('data.*.ruta'))->toContain('/planificacion');
+});
+
+it('asigna los roles R02 y R03 a un usuario existente y audita el cambio con su motivo', function () {
+    $usuario = $this->usuarioConRol(Rol::Reportante);
+
+    $this->comoRol($this->admin, Rol::Administrador)
+        ->putJson("/api/v1/admin/usuarios/{$usuario->id}/roles", ['roles' => ['R02', 'R03'], 'motivo' => 'Apoyo temporal a coordinación'])
+        ->assertOk()
+        ->assertJsonPath('data.roles.*.codigo', ['R02', 'R03']);
+
+    expect($usuario->refresh()->codigosRol())->toBe(['R02', 'R03']);
+    $evento = EventoAuditoria::query()->where('tipo_evento', 'ROLES_ACTUALIZADOS')->sole();
+    expect($evento)
+        ->usuario_id->toBe($this->admin->id)
+        ->motivo->toBe('Apoyo temporal a coordinación');
+});
+
+it('rechaza con 401 la sesión previa y con 403 el nuevo login de un usuario inactivado', function () {
+    User::factory()->tecnico('CERRAJERIA')->create(['email' => 'retirado@ecci.edu.co', 'password' => Hash::make('Clave*Segura1')]);
+    $login = $this->postJson('/api/v1/auth/login', ['email' => 'retirado@ecci.edu.co', 'password' => 'Clave*Segura1'])->assertOk();
+    $accessToken = $login->json('access_token');
+    $refreshToken = $login->getCookie('praxis_refresh', false)->getValue();
+
+    $this->comoRol($this->admin, Rol::Administrador)
+        ->patchJson("/api/v1/admin/usuarios/{$login->json('usuario.id')}/estado", ['activo' => false, 'motivo' => 'Retiro de la institución'])
+        ->assertOk();
+    app('auth')->forgetGuards();
+    $this->flushHeaders();
+
+    $this->withToken($accessToken)->getJson('/api/v1/auth/me')->assertUnauthorized();
+    $this->flushHeaders()->postJson('/api/v1/auth/refresh', ['refresh_token' => $refreshToken])->assertUnauthorized();
+    $this->postJson('/api/v1/auth/login', ['email' => 'retirado@ecci.edu.co', 'password' => 'Clave*Segura1'])
+        ->assertForbidden()
+        ->assertJsonPath('detail', 'Usuario inactivo. Comuníquese con el administrador del sistema');
+});
+
+it('conserva la autoría de las 20 intervenciones históricas tras inactivar al técnico', function () {
+    $tecnico = User::factory()->tecnico('CERRAJERIA')->create(['name' => 'Técnico Histórico']);
+    $incidencias = Incidencia::factory()->count(20)->cerradaHace(10)->asignadaA($tecnico)->categoria('CERRAJERIA')->create();
+    $incidencias->each(fn (Incidencia $incidencia) => ActividadMantenimiento::create([
+        'incidencia_id' => $incidencia->id,
+        'tecnico_ejecutor_id' => $tecnico->id,
+        'fecha_inicio' => now()->subDays(11),
+        'fecha_fin' => now()->subDays(10),
+        'tiempo_invertido_minutos' => 60,
+        'actividades_realizadas' => 'Cambio de cerradura.',
+    ]));
+
+    $this->comoRol($this->admin, Rol::Administrador)
+        ->patchJson("/api/v1/admin/usuarios/{$tecnico->id}/estado", ['activo' => false, 'motivo' => 'Retiro de la institución'])
+        ->assertOk();
+
+    $this->assertModelExists($tecnico);
+    expect(ActividadMantenimiento::query()->where('tecnico_ejecutor_id', $tecnico->id)->count())->toBe(20)
+        ->and(Incidencia::query()->where('tecnico_asignado_id', $tecnico->id)->count())->toBe(20);
+    $this->comoRol($this->admin, Rol::Administrador)
+        ->getJson("/api/v1/incidencias/{$incidencias->first()->id}")
+        ->assertOk()
+        ->assertJsonPath('data.tecnico_asignado.name', 'Técnico Histórico')
+        ->assertJsonPath('data.actividades.0.tecnico_ejecutor.name', 'Técnico Histórico');
 });
 
 it('impide quitar o inactivar al único administrador activo', function () {
