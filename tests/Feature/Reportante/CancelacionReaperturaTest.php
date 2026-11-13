@@ -35,7 +35,7 @@ it('rechaza con 422 la cancelación sin motivo y conserva el estado de la solici
     $this->comoRol($this->reportante, Rol::Reportante)
         ->postJson("/api/v1/incidencias/{$incidencia->id}/cancelar-solicitante", ['motivo' => ''])
         ->assertUnprocessable()
-        ->assertJsonValidationErrors(['motivo' => 'El motivo es obligatorio.']);
+        ->assertJsonValidationErrors(['motivo' => 'Debe ingresar el motivo por el cual cancela el reporte']);
 
     expect($incidencia->refresh())
         ->estado_codigo->toBe(EstadoIncidencia::Registrada)
