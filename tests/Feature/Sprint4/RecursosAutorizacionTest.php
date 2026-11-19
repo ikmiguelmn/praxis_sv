@@ -5,6 +5,7 @@ use App\Enums\EstadoSolicitudRecursos;
 use App\Enums\Rol;
 use App\Models\EventoAuditoria;
 use App\Models\Incidencia;
+use App\Models\NotificacionPlataforma;
 use App\Models\SolicitudRecursos;
 use App\Models\User;
 
@@ -256,4 +257,78 @@ it('[KAN-261] el seguimiento se rechaza si la solicitud ya no está pendiente', 
     $this->comoRol($this->coordinador, Rol::Coordinador)
         ->postJson("/api/v1/solicitudes-recursos/{$solicitud}/seguimientos", ['comentario' => 'Nota posterior a la confirmación'])
         ->assertStatus(409);
+});
+
+it('[KAN-261] suspende desde E09 por imposibilidad de abastecimiento y comunica formalmente al reportante', function () {
+    $reportante = $this->usuarioConRol(Rol::Reportante);
+    $incidencia = incidenciaConDiagnostico($this->tecnico, true, ['usuario_creador_id' => $reportante->id]);
+    $this->comoRol($this->coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/solicitudes-recursos", s4Solicitud(false))
+        ->assertCreated();
+
+    $this->comoRol($this->coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/suspender", [
+            'causal' => 'FALTA_REPUESTO',
+            'motivo_detallado' => 'El repuesto del equipo antiguo está descontinuado en el mercado',
+            'condiciones_reanudacion' => 'Conseguir un repuesto equivalente homologado por el fabricante',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.estado.codigo', 'E18');
+
+    expect($incidencia->refresh()->estado_codigo)->toBe(EstadoIncidencia::Suspendida)
+        ->and(NotificacionPlataforma::query()->where('usuario_destino_id', $reportante->id)->where('tipo', 'SUSPENSION')->exists())->toBeTrue();
+});
+
+it('[KAN-256] el rechazo con suspensión guarda autor, fecha y motivo y comunica a coordinador y reportante', function () {
+    $reportante = $this->usuarioConRol(Rol::Reportante);
+    $incidencia = incidenciaConDiagnostico($this->tecnico, true, ['usuario_creador_id' => $reportante->id]);
+    $solicitud = $this->comoRol($this->coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/solicitudes-recursos", s4Solicitud(true))
+        ->json('data.id');
+
+    $this->comoRol($this->autorizador, Rol::Autorizador)
+        ->postJson("/api/v1/solicitudes-recursos/{$solicitud}/dictamen", [
+            'resultado' => 'RECHAZADA',
+            'accion_rechazo' => 'SUSPENDER',
+            'justificacion' => 'Inviable presupuestalmente en el periodo actual',
+            'condiciones_reanudacion' => 'Asignación de presupuesto en la próxima vigencia',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.incidencia.estado.codigo', 'E18');
+
+    $registro = SolicitudRecursos::query()->findOrFail($solicitud);
+    expect($registro->autorizador_id)->toBe($this->autorizador->id)
+        ->and($registro->fecha_dictamen)->not->toBeNull()
+        ->and($registro->justificacion_dictamen)->toBe('Inviable presupuestalmente en el periodo actual')
+        ->and(NotificacionPlataforma::query()->where('usuario_destino_id', $reportante->id)->exists())->toBeTrue()
+        ->and(NotificacionPlataforma::query()->where('usuario_destino_id', $this->coordinador->id)->exists())->toBeTrue();
+});
+
+it('[KAN-256] el gestor (R02) recibe 403 en el dictamen, E08 queda intacto y el intento se audita', function () {
+    [$incidencia, $solicitud] = s4CrearSolicitud(true, $this->tecnico, $this->coordinador);
+    $gestor = $this->usuarioConRol(Rol::Gestor);
+
+    $this->comoRol($gestor, Rol::Gestor)
+        ->postJson("/api/v1/solicitudes-recursos/{$solicitud}/dictamen", ['resultado' => 'APROBADA', 'recursos_disponibles' => true])
+        ->assertForbidden();
+
+    expect($incidencia->refresh()->estado_codigo)->toBe(EstadoIncidencia::PendienteAutorizacion)
+        ->and(EventoAuditoria::query()->where('tipo_evento', 'ACCESO_DENEGADO')->where('usuario_id', $gestor->id)->exists())->toBeTrue();
+});
+
+it('[KAN-261] confirmar los recursos notifica al técnico asignado y registra el evento en el historial', function () {
+    [$incidencia] = s4CrearSolicitud(false, $this->tecnico, $this->coordinador);
+
+    $this->comoRol($this->coordinador, Rol::Coordinador)
+        ->patchJson("/api/v1/incidencias/{$incidencia->id}/confirmar-recursos", [
+            'fecha_programada' => now()->addDays(4)->toDateString(),
+            'hora_inicio' => '08:00',
+            'hora_fin' => '10:00',
+            'todos_disponibles' => true,
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.estado.codigo', 'E10');
+
+    expect(NotificacionPlataforma::query()->where('usuario_destino_id', $this->tecnico->id)->exists())->toBeTrue()
+        ->and(EventoAuditoria::query()->where('incidencia_id', $incidencia->id)->where('tipo_evento', 'RECURSOS_DISPONIBLES')->exists())->toBeTrue();
 });
