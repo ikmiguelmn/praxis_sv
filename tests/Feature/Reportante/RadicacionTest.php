@@ -6,11 +6,13 @@ use App\Enums\Urgencia;
 use App\Models\CategoriaIncidencia;
 use App\Models\EspacioFisico;
 use App\Models\EventoAuditoria;
+use App\Models\Evidencia;
 use App\Models\Incidencia;
 use App\Models\NotificacionPlataforma;
 use App\Models\User;
 use App\Services\CatalogoService;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 
 beforeEach(function () {
     $this->reportante = $this->usuarioConRol(Rol::Reportante);
@@ -244,4 +246,72 @@ it('mantiene operativas prioridadPara y prioridadPorCodigo al leer desde la cach
         ->and($porCodigo2)->not->toBeNull()
         ->and($porCodigo2->id)->toBe($porCodigo1->id)
         ->and($porCodigo2->codigo)->toBe('ALTA');
+});
+
+it('permite eliminar una evidencia huérfana propia (204), oculta ajenas (404) y protege vinculadas (409)', function () {
+    $disco = (string) config('praxis.disco_evidencias');
+    Storage::fake($disco);
+
+    $ids = $this->subirEvidencias($this->reportante, Rol::Reportante);
+    $evidencia = Evidencia::query()->findOrFail($ids[0]);
+    Storage::disk($disco)->assertExists($evidencia->ruta_storage);
+
+    // Otro usuario -> 404 (sin revelar existencia)
+    $otro = User::factory()->conRoles(Rol::Reportante)->create();
+    $this->comoRol($otro, Rol::Reportante)
+        ->deleteJson("/api/v1/incidencias/evidencias/{$evidencia->id}")
+        ->assertNotFound();
+
+    // Propietario elimina su evidencia no vinculada -> 204 y borra archivo + fila
+    $this->comoRol($this->reportante, Rol::Reportante)
+        ->deleteJson("/api/v1/incidencias/evidencias/{$evidencia->id}")
+        ->assertNoContent();
+
+    Storage::disk($disco)->assertMissing($evidencia->ruta_storage);
+    expect(Evidencia::query()->find($evidencia->id))->toBeNull();
+
+    // Evidencia vinculada a una incidencia -> 409
+    $idsVinculadas = $this->subirEvidencias($this->reportante, Rol::Reportante);
+    $this->comoRol($this->reportante, Rol::Reportante)
+        ->postJson('/api/v1/incidencias/radicar', datosRadicacion($this->espacio, extra: ['evidencias' => $idsVinculadas]))
+        ->assertCreated();
+
+    $vinculada = Evidencia::query()->findOrFail($idsVinculadas[0]);
+
+    $this->comoRol($this->reportante, Rol::Reportante)
+        ->deleteJson("/api/v1/incidencias/evidencias/{$vinculada->id}")
+        ->assertStatus(409);
+
+    Storage::disk($disco)->assertExists($vinculada->ruta_storage);
+});
+
+it('el comando praxis:limpiar-evidencias-huerfanas elimina solo las huérfanas con más de 24 horas', function () {
+    $disco = (string) config('praxis.disco_evidencias');
+    Storage::fake($disco);
+
+    $idsVieja = $this->subirEvidencias($this->reportante, Rol::Reportante);
+    $vieja = Evidencia::query()->findOrFail($idsVieja[0]);
+    Evidencia::query()->whereKey($vieja->id)->update(['created_at' => now()->subHours(25)]);
+
+    $idsReciente = $this->subirEvidencias($this->reportante, Rol::Reportante);
+    $reciente = Evidencia::query()->findOrFail($idsReciente[0]);
+
+    $idsVinculadaVieja = $this->subirEvidencias($this->reportante, Rol::Reportante);
+    $this->comoRol($this->reportante, Rol::Reportante)
+        ->postJson('/api/v1/incidencias/radicar', datosRadicacion($this->espacio, extra: ['evidencias' => $idsVinculadaVieja]))
+        ->assertCreated();
+    $vinculadaVieja = Evidencia::query()->findOrFail($idsVinculadaVieja[0]);
+    Evidencia::query()->whereKey($vinculadaVieja->id)->update(['created_at' => now()->subHours(48)]);
+
+    $this->artisan('praxis:limpiar-evidencias-huerfanas')
+        ->expectsOutputToContain('Evidencias huérfanas eliminadas: 1')
+        ->assertSuccessful();
+
+    Storage::disk($disco)->assertMissing($vieja->ruta_storage);
+    Storage::disk($disco)->assertExists($reciente->ruta_storage);
+    Storage::disk($disco)->assertExists($vinculadaVieja->ruta_storage);
+
+    expect(Evidencia::query()->find($vieja->id))->toBeNull()
+        ->and(Evidencia::query()->find($reciente->id))->not->toBeNull()
+        ->and(Evidencia::query()->find($vinculadaVieja->id))->not->toBeNull();
 });

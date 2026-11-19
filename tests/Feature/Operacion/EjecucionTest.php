@@ -124,3 +124,94 @@ it('reanuda hacia programada con una nueva fecha de intervención (E18 -> E10)',
 
     expect(PlanIntervencion::query()->where('incidencia_id', $incidencia->id)->where('estado_plan', PlanIntervencion::VIGENTE)->count())->toBe(1);
 });
+
+it('exige plan vigente o fechas al reanudar desde E11 hacia E10 y permite reanudar si ya existe plan vigente', function () {
+    $incidencia = incidenciaEnAtencion($this->tecnico);
+    $this->comoRol($this->coordinador, Rol::Coordinador)->postJson("/api/v1/incidencias/{$incidencia->id}/suspender", [
+        'causal' => 'ACCESO_RESTRINGIDO',
+        'motivo_detallado' => 'Se cerró el edificio por evento académico',
+        'condiciones_reanudacion' => 'Finalización del evento académico',
+    ])->assertOk();
+
+    // Sin plan vigente y sin fecha_programada -> 422
+    $this->comoRol($this->coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/reanudar", [
+            'estado_destino' => 'E10',
+            'observacion' => 'Evento finalizado, se requiere reprogramar',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('fecha_programada');
+
+    // Con plan vigente existente -> 200 sin enviar fechas
+    PlanIntervencion::create([
+        'incidencia_id' => $incidencia->id,
+        'programado_por_id' => $this->coordinador->id,
+        'fecha_programada' => now()->addDays(2)->toDateString(),
+        'hora_inicio' => '10:00',
+        'hora_fin' => '12:00',
+        'estado_plan' => PlanIntervencion::VIGENTE,
+    ]);
+
+    $this->comoRol($this->coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/reanudar", [
+            'estado_destino' => 'E10',
+            'observacion' => 'Se retoma el plan de intervención vigente',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.estado.codigo', 'E10');
+});
+
+it('reanuda una incidencia suspendida en E07 exactamente a E07 y rechaza pedir E10 con 422', function () {
+    $incidencia = Incidencia::factory()->enEstado(EstadoIncidencia::EnDiagnostico)->asignadaA($this->tecnico)->create();
+    $this->comoRol($this->coordinador, Rol::Coordinador)->postJson("/api/v1/incidencias/{$incidencia->id}/suspender", [
+        'causal' => 'ACCESO_RESTRINGIDO',
+        'motivo_detallado' => 'Aula ocupada durante inspección técnica',
+        'condiciones_reanudacion' => 'Liberación del aula por coordinación académica',
+    ])->assertOk();
+
+    // Pedir E10 desde suspensión originada en E07 -> 422
+    $this->comoRol($this->coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/reanudar", [
+            'estado_destino' => 'E10',
+            'observacion' => 'Intento de saltar diagnóstico hacia programada',
+            'fecha_programada' => now()->addDays(2)->toDateString(),
+            'hora_inicio' => '09:00',
+            'hora_fin' => '11:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('estado_destino');
+
+    // Sin estado_destino vuelve automáticamente a E07
+    $this->comoRol($this->coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/reanudar", [
+            'observacion' => 'El aula ya fue liberada para terminar el diagnóstico',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.estado.codigo', 'E07');
+
+    expect(Suspension::query()->where('incidencia_id', $incidencia->id)->firstOrFail()->estado_destino)->toBe('E07');
+});
+
+it('reanuda una incidencia suspendida en E09 exactamente a E09 y responde 409 si no existe suspensión vigente', function () {
+    $incidencia = Incidencia::factory()->enEstado(EstadoIncidencia::PendienteRecursos)->asignadaA($this->tecnico)->create();
+    $this->comoRol($this->coordinador, Rol::Coordinador)->postJson("/api/v1/incidencias/{$incidencia->id}/suspender", [
+        'causal' => 'PROVEEDOR_EXTERNO',
+        'motivo_detallado' => 'Proveedor detuvo despachos temporalmente',
+        'condiciones_reanudacion' => 'Confirmación de nueva fecha de entrega',
+    ])->assertOk();
+
+    $this->comoRol($this->coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/reanudar", [
+            'observacion' => 'Proveedor reanudó despachos y continúa espera de recursos',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.estado.codigo', 'E09');
+
+    // Dato inconsistente: E18 sin fila vigente en suspensiones -> 409
+    $inconsistente = Incidencia::factory()->enEstado(EstadoIncidencia::Suspendida)->asignadaA($this->tecnico)->create();
+    $this->comoRol($this->coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$inconsistente->id}/reanudar", [
+            'observacion' => 'Intento de reanudar sin registro de suspensión vigente',
+        ])
+        ->assertStatus(409);
+});

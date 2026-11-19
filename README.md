@@ -5,6 +5,8 @@ ORM: **Eloquent**. Base de datos: **PostgreSQL 16**. Autenticación: **Laravel S
 
 ## Levantar todo con Docker (recomendado)
 
+> **Nota:** `docker-compose.yml` es solo para **desarrollo local**. En un servidor (staging/producción) usa `APP_DEBUG=false`, credenciales propias y no publiques el puerto de PostgreSQL.
+
 Requisitos: Docker Desktop (o Docker Engine + Compose v2).
 
 ```bash

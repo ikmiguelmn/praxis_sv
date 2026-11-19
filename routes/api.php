@@ -71,6 +71,7 @@ Route::prefix('v1')->group(function (): void {
             Route::post('incidencias/{incidencia}/suscribir-seguimiento', [RadicacionController::class, 'suscribir']);
         });
         Route::post('incidencias/evidencias/upload', [RadicacionController::class, 'subirEvidencias']);
+        Route::delete('incidencias/evidencias/{evidencia}', [RadicacionController::class, 'eliminarEvidencia'])->whereNumber('evidencia');
 
         // E04: mis solicitudes (todos los roles ven las propias).
         Route::middleware($todos)->group(function (): void {
@@ -96,6 +97,7 @@ Route::prefix('v1')->group(function (): void {
         });
         Route::post('incidencias/{incidencia}/solicitar-aclaracion', [TriajeController::class, 'solicitarAclaracion'])->middleware('rol:R02,R03,R07');
         Route::patch('incidencias/{incidencia}/prioridad', [TriajeController::class, 'cambiarPrioridad'])->middleware('rol:R02,R03,R07');
+        Route::post('incidencias/{incidencia}/desactivar-protocolo', [TriajeController::class, 'desactivarProtocolo'])->middleware('rol:R03,R07');
         Route::get('incidencias/{incidencia}', [ConsolaController::class, 'show'])->middleware($operativos);
 
         // E06 / E08 / E09: planificación, asignación, recursos, suspensión y cierre (R03).

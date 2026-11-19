@@ -77,21 +77,22 @@ class PlanificacionService
      */
     public function asignar(Incidencia $incidencia, User $usuario, array $datos): AsignacionIncidencia
     {
-        $esReasignacion = $incidencia->tecnico_asignado_id !== null;
+        return DB::transaction(function () use ($incidencia, $usuario, $datos): AsignacionIncidencia {
+            $this->maquina->bloquear($incidencia);
+            $esReasignacion = $incidencia->tecnico_asignado_id !== null;
 
-        if (! $esReasignacion && ! $incidencia->estaEn(E::PendienteAsignacion)) {
-            throw ReglaNegocioException::conflicto('Solo se pueden asignar incidencias en Pendiente de asignación (E05).', 'D07');
-        }
+            if (! $esReasignacion && ! $incidencia->estaEn(E::PendienteAsignacion)) {
+                throw ReglaNegocioException::conflicto('Solo se pueden asignar incidencias en Pendiente de asignación (E05).', 'D07');
+            }
 
-        if ($esReasignacion && ($incidencia->estado_codigo->esTerminal() || $incidencia->estaEn(E::PendienteVerificacion, E::PendienteConfirmacion))) {
-            throw ReglaNegocioException::conflicto('La incidencia no admite reasignación en su estado actual.', 'RN-025');
-        }
+            if ($esReasignacion && ($incidencia->estado_codigo->esTerminal() || $incidencia->estaEn(E::PendienteVerificacion, E::PendienteConfirmacion))) {
+                throw ReglaNegocioException::conflicto('La incidencia no admite reasignación en su estado actual.', 'RN-025');
+            }
 
-        if ($esReasignacion && blank($datos['motivo_reasignacion'] ?? null)) {
-            throw ValidationException::withMessages(['motivo_reasignacion' => 'La reasignación exige registrar el motivo del relevo (RN-025).']);
-        }
+            if ($esReasignacion && blank($datos['motivo_reasignacion'] ?? null)) {
+                throw ValidationException::withMessages(['motivo_reasignacion' => 'La reasignación exige registrar el motivo del relevo (RN-025).']);
+            }
 
-        return DB::transaction(function () use ($incidencia, $usuario, $datos, $esReasignacion): AsignacionIncidencia {
             $tecnico = User::query()->whereKey($datos['tecnico_id'])->lockForUpdate()->first();
             $this->validarTecnico($incidencia, $tecnico);
 
@@ -186,17 +187,18 @@ class PlanificacionService
      */
     public function programar(Incidencia $incidencia, User $usuario, array $datos): PlanIntervencion
     {
-        $this->maquina->validarAutorizacionPrevia($incidencia, E::Programada);
-
-        if (! $incidencia->estaEn(E::EnDiagnostico, E::Programada)) {
-            throw ReglaNegocioException::conflicto('Solo se pueden programar incidencias con diagnóstico registrado (E07).', 'D07');
-        }
-
-        if ($incidencia->estaEn(E::Programada) && $incidencia->planVigente()->exists()) {
-            throw ReglaNegocioException::conflicto('La intervención ya está programada; use la reprogramación con motivo.', 'HU-6.3');
-        }
-
         return DB::transaction(function () use ($incidencia, $usuario, $datos): PlanIntervencion {
+            $this->maquina->bloquear($incidencia);
+            $this->maquina->validarAutorizacionPrevia($incidencia, E::Programada);
+
+            if (! $incidencia->estaEn(E::EnDiagnostico, E::Programada)) {
+                throw ReglaNegocioException::conflicto('Solo se pueden programar incidencias con diagnóstico registrado (E07).', 'D07');
+            }
+
+            if ($incidencia->estaEn(E::Programada) && $incidencia->planVigente()->exists()) {
+                throw ReglaNegocioException::conflicto('La intervención ya está programada; use la reprogramación con motivo.', 'HU-6.3');
+            }
+
             $diagnostico = null;
 
             if ($incidencia->estaEn(E::EnDiagnostico)) {
@@ -225,13 +227,14 @@ class PlanificacionService
      */
     public function reprogramar(Incidencia $incidencia, User $usuario, array $datos): PlanIntervencion
     {
-        $plan = $incidencia->planVigente()->first();
+        return DB::transaction(function () use ($incidencia, $usuario, $datos): PlanIntervencion {
+            $this->maquina->bloquear($incidencia);
+            $plan = $incidencia->planVigente()->first();
 
-        if (! $incidencia->estaEn(E::Programada) || $plan === null) {
-            throw ReglaNegocioException::conflicto('Solo se pueden reprogramar intervenciones programadas (E10) con plan vigente.', 'HU-6.3');
-        }
+            if (! $incidencia->estaEn(E::Programada) || $plan === null) {
+                throw ReglaNegocioException::conflicto('Solo se pueden reprogramar intervenciones programadas (E10) con plan vigente.', 'HU-6.3');
+            }
 
-        return DB::transaction(function () use ($incidencia, $usuario, $datos, $plan): PlanIntervencion {
             ReprogramacionPlan::create([
                 'plan_intervencion_id' => $plan->id,
                 'fecha_anterior' => $plan->fecha_programada,
@@ -272,11 +275,13 @@ class PlanificacionService
      */
     public function devolverDiagnostico(Incidencia $incidencia, User $usuario, string $observaciones): void
     {
-        if (! $incidencia->estaEn(E::EnDiagnostico)) {
-            throw ReglaNegocioException::conflicto('Solo se pueden devolver diagnósticos de incidencias en En diagnóstico (E07).', 'D07');
-        }
-
         DB::transaction(function () use ($incidencia, $usuario, $observaciones): void {
+            $this->maquina->bloquear($incidencia);
+
+            if (! $incidencia->estaEn(E::EnDiagnostico)) {
+                throw ReglaNegocioException::conflicto('Solo se pueden devolver diagnósticos de incidencias en En diagnóstico (E07).', 'D07');
+            }
+
             $diagnostico = $this->diagnosticoRegistrado($incidencia);
             $diagnostico->forceFill([
                 'estado' => Diagnostico::DEVUELTO,
@@ -295,11 +300,13 @@ class PlanificacionService
      */
     public function cerrarNoConfirmada(Incidencia $incidencia, User $usuario, ?string $observaciones): void
     {
-        if (! $incidencia->estaEn(E::EnDiagnostico)) {
-            throw ReglaNegocioException::conflicto('La incidencia debe estar En diagnóstico (E07).', 'D07');
-        }
-
         DB::transaction(function () use ($incidencia, $usuario, $observaciones): void {
+            $this->maquina->bloquear($incidencia);
+
+            if (! $incidencia->estaEn(E::EnDiagnostico)) {
+                throw ReglaNegocioException::conflicto('La incidencia debe estar En diagnóstico (E07).', 'D07');
+            }
+
             $diagnostico = $this->diagnosticoRegistrado($incidencia, confirmado: false);
             $diagnostico->forceFill(['estado' => Diagnostico::APROBADO, 'revisado_por_id' => $usuario->id, 'fecha_revision' => now()])->save();
 
@@ -331,11 +338,13 @@ class PlanificacionService
      */
     public function planificarCorreccion(Incidencia $incidencia, User $usuario, array $datos): PlanIntervencion
     {
-        if (! $incidencia->estaEn(E::EnCorreccion)) {
-            throw ReglaNegocioException::conflicto('Solo se pueden planificar correcciones de incidencias En corrección (E13).', 'RN-036');
-        }
-
         return DB::transaction(function () use ($incidencia, $usuario, $datos): PlanIntervencion {
+            $this->maquina->bloquear($incidencia);
+
+            if (! $incidencia->estaEn(E::EnCorreccion)) {
+                throw ReglaNegocioException::conflicto('Solo se pueden planificar correcciones de incidencias En corrección (E13).', 'RN-036');
+            }
+
             $verificacionRechazada = $incidencia->verificaciones()->where('resultado_conforme', false)->latest('id')->value('id');
             $plan = $this->crearPlan($incidencia, $usuario, $datos, null, $verificacionRechazada);
 
@@ -353,11 +362,13 @@ class PlanificacionService
      */
     public function suspender(Incidencia $incidencia, User $usuario, array $datos): Suspension
     {
-        if ($this->contextoRol->es(Rol::Tecnico) && (int) $incidencia->tecnico_asignado_id !== (int) $usuario->id) {
-            throw new AuthorizationException('Solo el técnico asignado puede suspender la atención.');
-        }
-
         return DB::transaction(function () use ($incidencia, $usuario, $datos): Suspension {
+            $this->maquina->bloquear($incidencia);
+
+            if ($this->contextoRol->es(Rol::Tecnico) && (int) $incidencia->tecnico_asignado_id !== (int) $usuario->id) {
+                throw new AuthorizationException('Solo el técnico asignado puede suspender la atención.');
+            }
+
             $suspension = $this->registrarSuspension($incidencia, $usuario, $datos['causal'], $datos['motivo_detallado'], $datos['condiciones_reanudacion']);
             $this->maquina->transicionar($incidencia, E::Suspendida, $usuario, $datos['motivo_detallado'], 'SUSPENSION', [
                 'suspension_id' => $suspension->id,
@@ -391,37 +402,70 @@ class PlanificacionService
     }
 
     /**
-     * Reanudación (E18 -> E10 o E11) conservando el tiempo y motivo de la pausa.
+     * Reanudación desde E18 respetando el estado de origen de la suspensión vigente (HU-7.4).
      *
      * @param  array<string, mixed>  $datos
      */
     public function reanudar(Incidencia $incidencia, User $usuario, array $datos): void
     {
-        if (! $incidencia->estaEn(E::Suspendida)) {
-            throw ReglaNegocioException::conflicto('La incidencia no está suspendida.', 'D07');
-        }
-
         DB::transaction(function () use ($incidencia, $usuario, $datos): void {
-            $destino = E::from($datos['estado_destino']);
-            $suspension = $incidencia->suspensiones()->whereNull('fecha_reanudacion')->latest('id')->first();
-            $minutos = $suspension === null ? null : (int) $suspension->fecha_suspension->diffInMinutes(now());
+            $this->maquina->bloquear($incidencia);
 
-            $suspension?->forceFill([
+            if (! $incidencia->estaEn(E::Suspendida)) {
+                throw ReglaNegocioException::conflicto('La incidencia no está suspendida.', 'D07');
+            }
+
+            $suspension = $incidencia->suspensiones()->whereNull('fecha_reanudacion')->latest('id')->lockForUpdate()->first();
+
+            if ($suspension === null) {
+                throw ReglaNegocioException::conflicto('No existe un registro de suspensión vigente para esta incidencia.', 'HU-7.4');
+            }
+
+            $origen = E::from($suspension->estado_origen);
+            $destinoSolicitado = isset($datos['estado_destino']) ? E::from($datos['estado_destino']) : null;
+
+            if (in_array($origen, [E::Programada, E::EnAtencion], true)) {
+                $destino = $destinoSolicitado ?? E::Programada;
+
+                if (! in_array($destino, [E::Programada, E::EnAtencion], true)) {
+                    throw ValidationException::withMessages([
+                        'estado_destino' => 'Las incidencias suspendidas en programación o atención solo pueden reanudarse a Programada (E10) o En atención (E11).',
+                    ]);
+                }
+
+                if ($destino === E::Programada) {
+                    if (isset($datos['fecha_programada'])) {
+                        $this->crearPlan($incidencia, $usuario, $datos, $incidencia->diagnosticoActual?->id);
+                    } elseif (! $incidencia->planVigente()->exists()) {
+                        throw ValidationException::withMessages([
+                            'fecha_programada' => 'Para reanudar a Programada (E10) debe existir un plan de intervención vigente o indicar fecha_programada, hora_inicio y hora_fin.',
+                        ]);
+                    }
+                }
+            } else {
+                if ($destinoSolicitado !== null && $destinoSolicitado !== $origen) {
+                    throw ValidationException::withMessages([
+                        'estado_destino' => "La incidencia fue suspendida en {$origen->value} ({$origen->nombre()}) y debe volver exactamente a esa etapa.",
+                    ]);
+                }
+
+                $destino = $origen;
+            }
+
+            $minutos = (int) $suspension->fecha_suspension->diffInMinutes(now());
+
+            $suspension->forceFill([
                 'usuario_reanuda_id' => $usuario->id,
                 'observacion_reanudacion' => $datos['observacion'],
                 'estado_destino' => $destino->value,
                 'fecha_reanudacion' => now(),
             ])->save();
 
-            if ($destino === E::Programada && isset($datos['fecha_programada'])) {
-                $incidencia->planes()->where('estado_plan', PlanIntervencion::VIGENTE)->update(['estado_plan' => PlanIntervencion::REEMPLAZADO]);
-                $this->crearPlan($incidencia, $usuario, $datos, $incidencia->diagnosticoActual?->id);
-            }
-
             $this->maquina->transicionar($incidencia, $destino, $usuario, $datos['observacion'], 'REANUDACION', [
-                'suspension_id' => $suspension?->id,
+                'suspension_id' => $suspension->id,
+                'estado_origen' => $origen->value,
                 'minutos_suspendida' => $minutos,
-                'causal' => $suspension?->causal,
+                'causal' => $suspension->causal,
             ]);
 
             $this->notificador->alReportante($incidencia, 'REANUDACION', "Se reanudó la atención de {$incidencia->codigo_ticket}", $datos['observacion']);
@@ -435,6 +479,7 @@ class PlanificacionService
     public function anular(Incidencia $incidencia, User $usuario, string $motivo): void
     {
         DB::transaction(function () use ($incidencia, $usuario, $motivo): void {
+            $this->maquina->bloquear($incidencia);
             $incidencia->motivo_cancelacion = $motivo;
             $incidencia->usuario_cancelacion_id = $usuario->id;
             $incidencia->resultado_final_cierre = ResultadoCierre::CANCELADA_ADMINISTRATIVAMENTE;
@@ -450,33 +495,35 @@ class PlanificacionService
      */
     public function cierreAdministrativo(Incidencia $incidencia, User $usuario, ?string $notas): void
     {
-        if ($incidencia->estaEn(E::EnAtencion, E::PendienteVerificacion, E::EnCorreccion)) {
-            throw ReglaNegocioException::conflicto(
-                $incidencia->estaEn(E::EnCorreccion)
-                    ? 'No se puede cerrar la incidencia: existen correcciones obligatorias pendientes (RN-037).'
-                    : 'No se puede cerrar una incidencia con verificaciones técnicas obligatorias pendientes (RN-037).',
-                'RN-037',
-            );
-        }
-
-        if (! $incidencia->estaEn(E::PendienteConfirmacion)) {
-            throw ReglaNegocioException::conflicto('El cierre administrativo solo aplica a incidencias Pendientes de confirmación (E14).', 'HU-9.3');
-        }
-
-        $dias = $this->parametros->entero(Parametro::PLAZO_CONFIRMACION_DIAS_HABILES);
-        $desde = CarbonImmutable::parse($incidencia->fecha_ultimo_cambio_estado ?? $incidencia->updated_at);
-        $vence = $this->sla->sumarDiasHabiles($desde, $dias);
-
-        if (now()->lessThanOrEqualTo($vence)) {
-            throw new ReglaNegocioException(
-                "El plazo de confirmación del reportante ({$dias} días hábiles) aún no ha vencido.",
-                'HU-9.3',
-                422,
-                ['vence' => $vence->toIso8601String()],
-            );
-        }
-
         DB::transaction(function () use ($incidencia, $usuario, $notas): void {
+            $this->maquina->bloquear($incidencia);
+
+            if ($incidencia->estaEn(E::EnAtencion, E::PendienteVerificacion, E::EnCorreccion)) {
+                throw ReglaNegocioException::conflicto(
+                    $incidencia->estaEn(E::EnCorreccion)
+                        ? 'No se puede cerrar la incidencia: existen correcciones obligatorias pendientes (RN-037).'
+                        : 'No se puede cerrar una incidencia con verificaciones técnicas obligatorias pendientes (RN-037).',
+                    'RN-037',
+                );
+            }
+
+            if (! $incidencia->estaEn(E::PendienteConfirmacion)) {
+                throw ReglaNegocioException::conflicto('El cierre administrativo solo aplica a incidencias Pendientes de confirmación (E14).', 'HU-9.3');
+            }
+
+            $dias = $this->parametros->entero(Parametro::PLAZO_CONFIRMACION_DIAS_HABILES);
+            $desde = CarbonImmutable::parse($incidencia->fecha_ultimo_cambio_estado ?? $incidencia->updated_at);
+            $vence = $this->sla->sumarDiasHabiles($desde, $dias);
+
+            if (now()->lessThanOrEqualTo($vence)) {
+                throw new ReglaNegocioException(
+                    "El plazo de confirmación del reportante ({$dias} días hábiles) aún no ha vencido.",
+                    'HU-9.3',
+                    422,
+                    ['vence' => $vence->toIso8601String()],
+                );
+            }
+
             $incidencia->es_cierre_administrativo = true;
             $incidencia->resultado_final_cierre = ResultadoCierre::CIERRE_ADMINISTRATIVO;
             $incidencia->notas_cierre = $notas ?? 'Cierre administrativo por vencimiento de plazo de confirmación.';

@@ -170,18 +170,19 @@ class AutenticacionService
         }
 
         $token = Str::random(64);
+        $minutos = $this->parametros->entero(Parametro::RECUPERACION_EXPIRACION_MINUTOS);
 
         TokenRecuperacion::query()->where('user_id', $usuario->id)->where('usado', false)->update(['usado' => true, 'fecha_uso' => now()]);
 
         TokenRecuperacion::create([
             'user_id' => $usuario->id,
             'token_hash' => hash('sha256', $token),
-            'fecha_expiracion' => now()->addMinutes($this->parametros->entero(Parametro::RECUPERACION_EXPIRACION_MINUTOS)),
+            'fecha_expiracion' => now()->addMinutes($minutos),
             'usado' => false,
             'created_at' => now(),
         ]);
 
-        $usuario->notify(new RestablecerPasswordNotification($token));
+        $usuario->notify(new RestablecerPasswordNotification($token, $minutos));
 
         $this->auditoria->registrar(
             tipoEvento: 'RECUPERACION_SOLICITADA',
@@ -205,11 +206,16 @@ class AutenticacionService
     public function restablecerPassword(string $token, string $password): void
     {
         DB::transaction(function () use ($token, $password): void {
-            $registro = $this->tokenRecuperacionVigente($token);
+            $registro = TokenRecuperacion::query()
+                ->where('token_hash', hash('sha256', $token))
+                ->lockForUpdate()
+                ->first();
 
-            if ($registro === null) {
+            if ($registro === null || $registro->usado || $registro->fecha_expiracion->isPast()) {
                 throw new ReglaNegocioException(self::MENSAJE_ENLACE_INVALIDO, 'HU-1.4', 410);
             }
+
+            $registro->forceFill(['usado' => true, 'fecha_uso' => now()])->save();
 
             $usuario = $registro->usuario;
             $usuario->forceFill([
@@ -218,7 +224,6 @@ class AutenticacionService
                 'bloqueado_hasta' => null,
             ])->save();
 
-            $registro->forceFill(['usado' => true, 'fecha_uso' => now()])->save();
             $usuario->revocarSesiones();
 
             $this->auditoria->registrar(
