@@ -30,20 +30,36 @@ class VencerAclaracionesCommand extends Command
             ->with('incidencia')
             ->chunkById(100, function ($aclaraciones) use ($maquina, $notificador, &$vencidas): void {
                 foreach ($aclaraciones as $aclaracion) {
-                    DB::transaction(function () use ($aclaracion, $maquina, $notificador): void {
+                    $cancelada = DB::transaction(function () use ($aclaracion, $maquina, $notificador): bool {
                         $incidencia = $aclaracion->incidencia;
+                        $maquina->bloquear($incidencia);
+
+                        if (! $incidencia->estaEn(EstadoIncidencia::PendienteInformacion)) {
+                            return false;
+                        }
+
+                        $aclaracionBloqueada = SolicitudAclaracion::query()->whereKey($aclaracion->id)->lockForUpdate()->first();
+
+                        if ($aclaracionBloqueada === null || $aclaracionBloqueada->estado !== SolicitudAclaracion::PENDIENTE) {
+                            return false;
+                        }
+
                         $motivo = 'Cancelada por falta de respuesta del reportante dentro del plazo institucional (RN-010).';
 
-                        $aclaracion->forceFill(['estado' => SolicitudAclaracion::VENCIDA])->save();
+                        $aclaracionBloqueada->forceFill(['estado' => SolicitudAclaracion::VENCIDA])->save();
                         $incidencia->motivo_cancelacion = $motivo;
                         $incidencia->resultado_final_cierre = ResultadoCierre::CANCELADA_POR_FALTA_DE_RESPUESTA;
                         $incidencia->notas_cierre = $motivo;
 
-                        $maquina->transicionar($incidencia, EstadoIncidencia::Cancelada, null, $motivo, 'CADUCIDAD_ACLARACION', ['solicitud_aclaracion_id' => $aclaracion->id]);
+                        $maquina->transicionar($incidencia, EstadoIncidencia::Cancelada, null, $motivo, 'CADUCIDAD_ACLARACION', ['solicitud_aclaracion_id' => $aclaracionBloqueada->id]);
                         $notificador->alReportante($incidencia, 'CANCELACION', "Tu solicitud {$incidencia->codigo_ticket} fue cancelada", $motivo);
+
+                        return true;
                     });
 
-                    $vencidas++;
+                    if ($cancelada) {
+                        $vencidas++;
+                    }
                 }
             });
 

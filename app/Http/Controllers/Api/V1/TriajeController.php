@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\CambiarPrioridadRequest;
 use App\Http\Requests\ClasificarIncidenciaRequest;
 use App\Http\Requests\EvaluarRiesgoRequest;
+use App\Http\Requests\MotivoRequest;
 use App\Http\Requests\SolicitarAclaracionRequest;
 use App\Http\Requests\VincularDuplicadoRequest;
 use App\Models\Incidencia;
@@ -110,6 +111,18 @@ class TriajeController extends Controller
             'evaluacion_id' => $evaluacion->id,
             'protocolo_activado' => $evaluacion->protocolo_activado,
             'prioridad' => $incidencia->prioridad?->only(['codigo', 'nombre']),
+        ]);
+    }
+
+    /**
+     * POST /api/v1/incidencias/{incidencia}/desactivar-protocolo: desactiva el protocolo de emergencia (R03/R07).
+     */
+    public function desactivarProtocolo(MotivoRequest $request, Incidencia $incidencia): JsonResponse
+    {
+        $this->triaje->desactivarProtocolo($incidencia, $request->user(), $request->string('motivo')->toString());
+
+        return $this->estado($incidencia, 'Protocolo de emergencia desactivado.', [
+            'protocolo_emergencia_activo' => false,
         ]);
     }
 

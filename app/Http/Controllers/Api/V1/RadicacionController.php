@@ -16,6 +16,7 @@ use App\Support\ContextoRol;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -58,6 +59,16 @@ class RadicacionController extends Controller
         $evidencias = $this->evidencias->cargar($request->file('archivos'), $usuario, $etapa, $incidencia);
 
         return response()->json(['data' => EvidenciaResource::collection($evidencias)], 201);
+    }
+
+    /**
+     * DELETE /api/v1/incidencias/evidencias/{evidencia}: elimina una evidencia huérfana del usuario que la cargó.
+     */
+    public function eliminarEvidencia(Request $request, Evidencia $evidencia): Response
+    {
+        $this->evidencias->eliminarHuerfana($evidencia, $request->user());
+
+        return response()->noContent();
     }
 
     /**
