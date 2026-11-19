@@ -7,6 +7,7 @@ use App\Enums\EstadoIncidencia as E;
 use App\Enums\EtapaEvidencia;
 use App\Enums\Rol;
 use App\Exceptions\ReglaNegocioException;
+use App\Exceptions\TransicionNoPermitidaException;
 use App\Models\ActividadMantenimiento;
 use App\Models\Diagnostico;
 use App\Models\Incidencia;
@@ -32,9 +33,14 @@ class EjecucionService
 
     public function iniciarInspeccion(Incidencia $incidencia, User $usuario): Diagnostico
     {
-        $this->exigirTecnicoAsignado($incidencia, $usuario);
-
         return DB::transaction(function () use ($incidencia, $usuario): Diagnostico {
+            $this->maquina->bloquear($incidencia);
+            $this->exigirTecnicoAsignado($incidencia, $usuario);
+
+            if (! $incidencia->estaEn(E::PendienteInspeccion)) {
+                throw new TransicionNoPermitidaException($incidencia->estado_codigo, E::EnDiagnostico);
+            }
+
             $this->maquina->transicionar($incidencia, E::EnDiagnostico, $usuario, 'Inicio de inspección en sitio.', 'INICIO_INSPECCION');
 
             return Diagnostico::create([
@@ -53,9 +59,10 @@ class EjecucionService
      */
     public function registrarDiagnostico(Incidencia $incidencia, User $usuario, array $datos): Diagnostico
     {
-        $diagnostico = $this->diagnosticoEnCurso($incidencia, $usuario);
+        return DB::transaction(function () use ($incidencia, $usuario, $datos): Diagnostico {
+            $this->maquina->bloquear($incidencia);
+            $diagnostico = $this->diagnosticoEnCurso($incidencia, $usuario);
 
-        return DB::transaction(function () use ($incidencia, $usuario, $datos, $diagnostico): Diagnostico {
             $diagnostico->forceFill([
                 'incidencia_confirmada' => true,
                 'hallazgos' => $datos['hallazgos'],
@@ -97,9 +104,10 @@ class EjecucionService
      */
     public function descartarPorInspeccion(Incidencia $incidencia, User $usuario, array $datos): Diagnostico
     {
-        $diagnostico = $this->diagnosticoEnCurso($incidencia, $usuario);
+        return DB::transaction(function () use ($incidencia, $usuario, $datos): Diagnostico {
+            $this->maquina->bloquear($incidencia);
+            $diagnostico = $this->diagnosticoEnCurso($incidencia, $usuario);
 
-        return DB::transaction(function () use ($incidencia, $usuario, $datos, $diagnostico): Diagnostico {
             $evidencias = $this->evidencias->vincularPendientes(array_map('intval', $datos['evidencias'] ?? []), $usuario, $incidencia, EtapaEvidencia::Inspeccion, 'diagnostico', $diagnostico->id);
 
             if ($incidencia->evidencias()->where('etapa', EtapaEvidencia::Inspeccion->value)->where('created_at', '>=', $diagnostico->fecha_inicio_inspeccion)->doesntExist()) {
@@ -134,10 +142,15 @@ class EjecucionService
 
     public function iniciarAtencion(Incidencia $incidencia, User $usuario): ActividadMantenimiento
     {
-        $this->exigirTecnicoAsignado($incidencia, $usuario);
-        $this->maquina->validarAutorizacionPrevia($incidencia, E::EnAtencion);
-
         return DB::transaction(function () use ($incidencia, $usuario): ActividadMantenimiento {
+            $this->maquina->bloquear($incidencia);
+            $this->exigirTecnicoAsignado($incidencia, $usuario);
+
+            $this->maquina->validarAutorizacionPrevia($incidencia, E::EnAtencion);
+
+            if (! $incidencia->estaEn(E::Programada)) {
+                throw new TransicionNoPermitidaException($incidencia->estado_codigo, E::EnAtencion);
+            }
             $this->maquina->transicionar($incidencia, E::EnAtencion, $usuario, 'Inicio de la intervención física.', 'INICIO_ATENCION');
 
             return ActividadMantenimiento::create([
@@ -156,19 +169,20 @@ class EjecucionService
      */
     public function registrarIntervencion(Incidencia $incidencia, User $usuario, array $datos): ActividadMantenimiento
     {
-        $this->exigirTecnicoAsignado($incidencia, $usuario);
+        return DB::transaction(function () use ($incidencia, $usuario, $datos): ActividadMantenimiento {
+            $this->maquina->bloquear($incidencia);
+            $this->exigirTecnicoAsignado($incidencia, $usuario);
 
-        if (! $incidencia->estaEn(E::EnAtencion)) {
-            throw ReglaNegocioException::conflicto('La incidencia debe estar En atención (E11) para registrar la intervención.', 'D07');
-        }
+            if (! $incidencia->estaEn(E::EnAtencion)) {
+                throw ReglaNegocioException::conflicto('La incidencia debe estar En atención (E11) para registrar la intervención.', 'D07');
+            }
 
-        $actividad = $incidencia->actividades()->whereNull('fecha_fin')->latest('id')->first();
+            $actividad = $incidencia->actividades()->whereNull('fecha_fin')->latest('id')->first();
 
-        if ($actividad === null) {
-            throw ReglaNegocioException::conflicto('No hay una intervención iniciada para registrar.', 'RN-032');
-        }
+            if ($actividad === null) {
+                throw ReglaNegocioException::conflicto('No hay una intervención iniciada para registrar.', 'RN-032');
+            }
 
-        return DB::transaction(function () use ($incidencia, $usuario, $datos, $actividad): ActividadMantenimiento {
             $evidencias = $this->evidencias->vincularPendientes(array_map('intval', $datos['evidencias'] ?? []), $usuario, $incidencia, EtapaEvidencia::Ejecucion, 'actividad_mantenimiento', $actividad->id);
 
             $tieneEvidencias = $incidencia->evidencias()

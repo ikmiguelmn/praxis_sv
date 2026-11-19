@@ -1,11 +1,15 @@
 <?php
 
 use App\Enums\EstadoIncidencia;
+use App\Enums\EstadoSolicitudRecursos;
 use App\Enums\Rol;
+use App\Models\Diagnostico;
 use App\Models\EventoAuditoria;
 use App\Models\HistorialCambioPrioridad;
 use App\Models\Incidencia;
 use App\Models\NotificacionPlataforma;
+use App\Models\SolicitudRecursos;
+use App\Models\User;
 use App\Support\ResultadoCierre;
 
 beforeEach(function () {
@@ -180,4 +184,104 @@ it('descarta la sugerencia de duplicado y continúa la revisión independiente',
         ->assertOk();
 
     expect($nueva->refresh()->posible_duplicado)->toBeFalse();
+});
+
+it('desactiva el protocolo de emergencia con motivo, audita, notifica y vuelve a exigir autorización (RN-029)', function () {
+    $coordinador = $this->usuarioConRol(Rol::Coordinador);
+    $tecnico = User::factory()->tecnico('ELECTRICO')->create();
+    $incidencia = Incidencia::factory()
+        ->enEstado(EstadoIncidencia::EnDiagnostico)
+        ->asignadaA($tecnico)
+        ->prioridad('CRITICA')
+        ->create(['es_riesgo_inmediato' => true, 'protocolo_emergencia_activo' => true]);
+
+    $diagnostico = Diagnostico::create([
+        'incidencia_id' => $incidencia->id,
+        'tecnico_id' => $tecnico->id,
+        'fecha_inicio_inspeccion' => now()->subHour(),
+        'fecha_fin_diagnostico' => now(),
+        'incidencia_confirmada' => true,
+        'hallazgos' => 'Riesgo controlado tras corte eléctrico.',
+        'descripcion_problema' => 'Requiere cambio de tablero.',
+        'intervencion_propuesta' => 'Reemplazo de tablero.',
+        'estado' => Diagnostico::REGISTRADO,
+    ]);
+
+    SolicitudRecursos::create([
+        'incidencia_id' => $incidencia->id,
+        'diagnostico_id' => $diagnostico->id,
+        'solicitante_id' => $coordinador->id,
+        'decision_requerida' => 'Aprobar compra de tablero.',
+        'requiere_autorizacion' => true,
+        'es_emergencia' => false,
+        'estado_solicitud' => EstadoSolicitudRecursos::PendienteAutorizacion,
+    ]);
+
+    // Sin motivo -> 422
+    $this->comoRol($coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/desactivar-protocolo", [])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('motivo');
+
+    // Rol no permitido (R02 Gestor) -> 403
+    $this->comoRol($this->gestor, Rol::Gestor)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/desactivar-protocolo", [
+            'motivo' => 'Intento de desactivación por rol no autorizado.',
+        ])
+        ->assertForbidden();
+
+    // Desactivación válida por R03 -> 200
+    $this->comoRol($coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/desactivar-protocolo", [
+            'motivo' => 'Riesgo controlado y zona asegurada; continúa flujo normal.',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.protocolo_emergencia_activo', false);
+
+    $incidencia->refresh();
+    expect($incidencia->protocolo_emergencia_activo)->toBeFalse()
+        ->and($incidencia->prioridad->codigo)->toBe('CRITICA')
+        ->and(EventoAuditoria::query()->where('incidencia_id', $incidencia->id)->where('tipo_evento', 'PROTOCOLO_EMERGENCIA_DESACTIVADO')->exists())->toBeTrue()
+        ->and(NotificacionPlataforma::query()->where('usuario_destino_id', $this->gestor->id)->where('tipo', 'PROTOCOLO_EMERGENCIA_DESACTIVADO')->exists())->toBeTrue()
+        ->and(NotificacionPlataforma::query()->where('usuario_destino_id', $coordinador->id)->where('tipo', 'PROTOCOLO_EMERGENCIA_DESACTIVADO')->exists())->toBeTrue();
+
+    // Si ya no está activo -> 409
+    $this->comoRol($coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/desactivar-protocolo", [
+            'motivo' => 'Segundo intento cuando ya fue desactivado.',
+        ])
+        ->assertStatus(409);
+
+    // Tras desactivar, la solicitud de recursos pendiente vuelve a bloquear la programación (RN-029)
+    $this->comoRol($coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/programar", [
+            'fecha_programada' => now()->addDay()->toDateString(),
+            'hora_inicio' => '09:00',
+            'hora_fin' => '11:00',
+        ])
+        ->assertStatus(409)
+        ->assertJsonPath('regla', 'RN-029');
+});
+
+it('desactiva automáticamente el protocolo de emergencia al llegar a un estado terminal', function () {
+    $coordinador = $this->usuarioConRol(Rol::Coordinador);
+    $incidencia = Incidencia::factory()
+        ->enEstado(EstadoIncidencia::PendienteRecursos)
+        ->prioridad('CRITICA')
+        ->create(['es_riesgo_inmediato' => true, 'protocolo_emergencia_activo' => true]);
+
+    $this->comoRol($coordinador, Rol::Coordinador)
+        ->postJson("/api/v1/incidencias/{$incidencia->id}/anular", [
+            'motivo' => 'Se determinó reemplazo total del edificio fuera de mantenimiento.',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.estado.codigo', 'E17');
+
+    $evento = EventoAuditoria::query()
+        ->where('incidencia_id', $incidencia->id)
+        ->where('tipo_evento', 'CANCELACION_ADMINISTRATIVA')
+        ->firstOrFail();
+
+    expect($incidencia->refresh()->protocolo_emergencia_activo)->toBeFalse()
+        ->and($evento->datos['protocolo_emergencia_desactivado'] ?? null)->toBeTrue();
 });

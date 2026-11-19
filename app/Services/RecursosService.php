@@ -39,23 +39,25 @@ class RecursosService
      */
     public function solicitar(Incidencia $incidencia, User $usuario, array $datos): SolicitudRecursos
     {
-        if (! $incidencia->estaEn(E::EnDiagnostico)) {
-            throw ReglaNegocioException::conflicto('Las solicitudes de recursos se registran con la incidencia En diagnóstico (E07).', 'D07');
-        }
+        return DB::transaction(function () use ($incidencia, $usuario, $datos): SolicitudRecursos {
+            $this->maquina->bloquear($incidencia);
 
-        $diagnostico = $incidencia->diagnosticos()->latest('id')->first();
+            if (! $incidencia->estaEn(E::EnDiagnostico)) {
+                throw ReglaNegocioException::conflicto('Las solicitudes de recursos se registran con la incidencia En diagnóstico (E07).', 'D07');
+            }
 
-        if ($diagnostico === null || $diagnostico->estado !== Diagnostico::REGISTRADO || $diagnostico->incidencia_confirmada === false) {
-            throw ReglaNegocioException::conflicto('Debe existir un diagnóstico confirmado para solicitar recursos.', 'RN-026');
-        }
+            $diagnostico = $incidencia->diagnosticos()->latest('id')->first();
 
-        $emergencia = (bool) ($datos['es_emergencia'] ?? false);
+            if ($diagnostico === null || $diagnostico->estado !== Diagnostico::REGISTRADO || $diagnostico->incidencia_confirmada === false) {
+                throw ReglaNegocioException::conflicto('Debe existir un diagnóstico confirmado para solicitar recursos.', 'RN-026');
+            }
 
-        if ($emergencia && ! $incidencia->protocolo_emergencia_activo) {
-            throw new ReglaNegocioException('La modalidad de emergencia solo aplica a incidencias con protocolo de riesgo inmediato activo (RN-029).', 'RN-029');
-        }
+            $emergencia = (bool) ($datos['es_emergencia'] ?? false);
 
-        return DB::transaction(function () use ($incidencia, $usuario, $datos, $diagnostico, $emergencia): SolicitudRecursos {
+            if ($emergencia && ! $incidencia->protocolo_emergencia_activo) {
+                throw new ReglaNegocioException('La modalidad de emergencia solo aplica a incidencias con protocolo de riesgo inmediato activo (RN-029).', 'RN-029');
+            }
+
             $requiereAutorizacion = (bool) $datos['requiere_autorizacion'];
 
             $solicitud = SolicitudRecursos::create([
@@ -112,25 +114,30 @@ class RecursosService
     public function dictaminar(SolicitudRecursos $solicitud, User $usuario, array $datos): void
     {
         $incidencia = $solicitud->incidencia;
-        $solicitud->loadMissing('detalles');
-
-        if ($solicitud->estado_solicitud !== S::PendienteAutorizacion) {
-            throw ReglaNegocioException::conflicto('La solicitud no está pendiente de autorización.', 'RN-028');
-        }
-
-        if ($this->contextoRol->es(Rol::Coordinador)) {
-            $tope = $this->parametros->entero(Parametro::TOPE_AUTORIDAD_COORDINADOR);
-
-            if ($solicitud->costoTotalEstimado() > $tope) {
-                throw new AuthorizationException('El costo estimado supera el tope de autoridad delegada del coordinador; requiere dictamen del Responsable de autorizaciones (R05).');
-            }
-        }
-
-        if (! $solicitud->es_emergencia && ! $incidencia->estaEn(E::PendienteAutorizacion)) {
-            throw ReglaNegocioException::conflicto('La incidencia no está Pendiente de autorización (E08).', 'D07');
-        }
 
         DB::transaction(function () use ($solicitud, $incidencia, $usuario, $datos): void {
+            $this->maquina->bloquear($incidencia);
+            $bloqueada = SolicitudRecursos::query()->whereKey($solicitud->id)->lockForUpdate()->firstOrFail();
+            $solicitud->setRawAttributes($bloqueada->getAttributes(), true);
+            $solicitud->syncOriginal();
+            $solicitud->loadMissing('detalles');
+
+            if ($solicitud->estado_solicitud !== S::PendienteAutorizacion) {
+                throw ReglaNegocioException::conflicto('La solicitud no está pendiente de autorización.', 'RN-028');
+            }
+
+            if ($this->contextoRol->es(Rol::Coordinador)) {
+                $tope = $this->parametros->entero(Parametro::TOPE_AUTORIDAD_COORDINADOR);
+
+                if ($solicitud->costoTotalEstimado() > $tope) {
+                    throw new AuthorizationException('El costo estimado supera el tope de autoridad delegada del coordinador; requiere dictamen del Responsable de autorizaciones (R05).');
+                }
+            }
+
+            if (! $solicitud->es_emergencia && ! $incidencia->estaEn(E::PendienteAutorizacion)) {
+                throw ReglaNegocioException::conflicto('La incidencia no está Pendiente de autorización (E08).', 'D07');
+            }
+
             $aprobada = $datos['resultado'] === 'APROBADA';
             $disponibles = $aprobada && (bool) ($datos['recursos_disponibles'] ?? false);
 
@@ -198,11 +205,13 @@ class RecursosService
      */
     public function confirmarRecursos(Incidencia $incidencia, User $usuario, array $datos): void
     {
-        if (! $incidencia->estaEn(E::PendienteRecursos)) {
-            throw ReglaNegocioException::conflicto('La incidencia no está Pendiente de recursos (E09).', 'D07');
-        }
-
         DB::transaction(function () use ($incidencia, $usuario, $datos): void {
+            $this->maquina->bloquear($incidencia);
+
+            if (! $incidencia->estaEn(E::PendienteRecursos)) {
+                throw ReglaNegocioException::conflicto('La incidencia no está Pendiente de recursos (E09).', 'D07');
+            }
+
             $solicitudes = $incidencia->solicitudesRecursos()->where('estado_solicitud', S::PendienteRecursos->value)->with('detalles')->lockForUpdate()->get();
 
             foreach ($solicitudes as $solicitud) {
