@@ -2,9 +2,12 @@
 
 use App\Enums\Rol;
 use App\Models\EventoAuditoria;
+use App\Models\ParametroSistema;
 use App\Models\TokenRecuperacion;
 use App\Models\User;
 use App\Notifications\RestablecerPasswordNotification;
+use App\Services\ParametrosService;
+use App\Support\Parametro;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Notification;
 
@@ -181,6 +184,50 @@ it('permite al cliente web enviar la cookie de refresh desde su origen (CORS con
     ]);
 
     expect($ajeno->headers->get('Access-Control-Allow-Origin'))->not->toBe('https://sitio-ajeno.com');
+});
+
+it('impide reutilizar el mismo token de recuperación y conserva la contraseña del primer restablecimiento', function () {
+    Notification::fake();
+    $usuario = crearUsuarioLogin();
+
+    $this->postJson('/api/v1/auth/solicitar-recuperacion', ['email' => 'tecnico@ecci.edu.co'])->assertOk();
+    $token = Notification::sent($usuario, RestablecerPasswordNotification::class)->first()->token;
+
+    $this->postJson('/api/v1/auth/restablecer-password', [
+        'token' => $token,
+        'password' => 'Primera*Clave1',
+        'password_confirmation' => 'Primera*Clave1',
+    ])->assertOk();
+
+    $this->postJson('/api/v1/auth/restablecer-password', [
+        'token' => $token,
+        'password' => 'Segunda*Clave2',
+        'password_confirmation' => 'Segunda*Clave2',
+    ])->assertStatus(410)
+        ->assertJsonPath('detail', 'El enlace de restablecimiento ha expirado. Por favor solicite uno nuevo');
+
+    $usuario->refresh();
+    expect(Hash::check('Primera*Clave1', $usuario->password))->toBeTrue()
+        ->and(Hash::check('Segunda*Clave2', $usuario->password))->toBeFalse();
+});
+
+it('incluye en el correo de recuperación los minutos reales configurados en RECUPERACION_EXPIRACION_MINUTOS', function () {
+    Notification::fake();
+    $usuario = crearUsuarioLogin();
+
+    ParametroSistema::query()
+        ->where('clave', Parametro::RECUPERACION_EXPIRACION_MINUTOS)
+        ->update(['valor' => '45']);
+    app(ParametrosService::class)->invalidar();
+
+    $this->postJson('/api/v1/auth/solicitar-recuperacion', ['email' => 'tecnico@ecci.edu.co'])->assertOk();
+
+    Notification::assertSentTo($usuario, RestablecerPasswordNotification::class, function (RestablecerPasswordNotification $notificacion) use ($usuario) {
+        $correo = $notificacion->toMail($usuario);
+        $contenido = implode(' ', [...$correo->introLines, ...$correo->outroLines]);
+
+        return str_contains($contenido, '45 minutos') && ! str_contains($contenido, '30 minutos');
+    });
 });
 
 it('no guarda la contraseña enviada en el evento de auditoría del login fallido', function () {

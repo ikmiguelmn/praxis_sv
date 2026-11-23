@@ -12,6 +12,8 @@ use App\Models\Incidencia;
 use App\Models\User;
 use App\Support\ContextoRol;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Support\Facades\DB;
+use LogicException;
 
 /**
  * Máquina de estados central de la incidencia. Valida cada transición contra la matriz D07
@@ -121,6 +123,10 @@ class MaquinaEstados
                 E::PendienteAsignacion->value => $reportante,
             ],
             E::Suspendida->value => [
+                E::PendienteInspeccion->value => $coordinacion,
+                E::EnDiagnostico->value => $coordinacion,
+                E::PendienteAutorizacion->value => $coordinacion,
+                E::PendienteRecursos->value => $coordinacion,
                 E::Programada->value => $coordinacion,
                 E::EnAtencion->value => $coordinacion,
                 E::Cancelada->value => $coordinacion,
@@ -168,6 +174,24 @@ class MaquinaEstados
     }
 
     /**
+     * Relee y bloquea la fila de la incidencia (FOR UPDATE) dentro de una transacción activa,
+     * sincronizando los atributos del modelo recibido con el estado real en base de datos.
+     */
+    public function bloquear(Incidencia $incidencia): Incidencia
+    {
+        if ($incidencia->getConnection()->transactionLevel() === 0) {
+            throw new LogicException('MaquinaEstados::bloquear() debe ejecutarse dentro de una transacción de base de datos.');
+        }
+
+        $bloqueada = Incidencia::query()->whereKey($incidencia->getKey())->lockForUpdate()->firstOrFail();
+        $incidencia->setRawAttributes($bloqueada->getAttributes(), true);
+        $incidencia->exists = true;
+        $incidencia->syncOriginal();
+
+        return $incidencia;
+    }
+
+    /**
      * Ejecuta una transición validada y la registra en la bitácora. Debe invocarse dentro de una transacción.
      * $actuarComo permite que el creador del ticket actúe como Reportante (R01) aunque su rol activo sea otro,
      * pues la autorización en esos casos proviene de la propiedad del ticket.
@@ -210,6 +234,14 @@ class MaquinaEstados
 
         $this->validarInvariantes($incidencia, $origen, $destino);
 
+        $estadoActualBd = DB::table('incidencias')->where('id', $incidencia->getKey())->value('estado_codigo');
+
+        if ($estadoActualBd !== $origen->value) {
+            $estadoActual = is_string($estadoActualBd) ? (E::tryFrom($estadoActualBd) ?? $origen) : $origen;
+
+            throw new TransicionNoPermitidaException($estadoActual, $destino);
+        }
+
         $ahora = now();
         $incidencia->estado_codigo = $destino;
         $incidencia->fecha_ultimo_cambio_estado = $ahora;
@@ -222,6 +254,11 @@ class MaquinaEstados
             $incidencia->fecha_cierre = $ahora;
             $incidencia->usuario_cierre_id = $usuario?->id;
             $this->sla->congelar($incidencia, $ahora);
+
+            if ($incidencia->protocolo_emergencia_activo) {
+                $incidencia->protocolo_emergencia_activo = false;
+                $datos['protocolo_emergencia_desactivado'] = true;
+            }
         }
 
         if ($origen === E::Cerrada) {

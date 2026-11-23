@@ -42,11 +42,13 @@ class ReportanteService
     {
         $this->exigirPropietario($incidencia, $usuario);
 
-        if (! $incidencia->estaEn(E::PendienteInformacion)) {
-            throw ReglaNegocioException::conflicto('Solo es posible aportar aclaraciones cuando la solicitud está en Pendiente de información (RN-008).', 'RN-008');
-        }
-
         return DB::transaction(function () use ($incidencia, $usuario, $respuesta, $idsEvidencias): SolicitudAclaracion {
+            $this->maquina->bloquear($incidencia);
+
+            if (! $incidencia->estaEn(E::PendienteInformacion)) {
+                throw ReglaNegocioException::conflicto('Solo es posible aportar aclaraciones cuando la solicitud está en Pendiente de información (RN-008).', 'RN-008');
+            }
+
             $aclaracion = $incidencia->solicitudesAclaracion()->where('estado', SolicitudAclaracion::PENDIENTE)->latest('id')->lockForUpdate()->firstOrFail();
 
             $aclaracion->forceFill([
@@ -88,16 +90,18 @@ class ReportanteService
     {
         $this->exigirPropietario($incidencia, $usuario);
 
-        if (! $incidencia->estaEn(E::Registrada, E::PendienteInformacion, E::EnRevision, E::EnClasificacion)) {
-            throw ReglaNegocioException::conflicto(
-                $incidencia->estado_codigo->esTerminal()
-                    ? 'La solicitud ya se encuentra finalizada.'
-                    : 'La solicitud ya cuenta con personal técnico asignado. Para novedades comuníquese con Coordinación de Mantenimiento',
-                'HU-4.4',
-            );
-        }
-
         DB::transaction(function () use ($incidencia, $usuario, $motivo): void {
+            $this->maquina->bloquear($incidencia);
+
+            if (! $incidencia->estaEn(E::Registrada, E::PendienteInformacion, E::EnRevision, E::EnClasificacion)) {
+                throw ReglaNegocioException::conflicto(
+                    $incidencia->estado_codigo->esTerminal()
+                        ? 'La solicitud ya se encuentra finalizada.'
+                        : 'La solicitud ya cuenta con personal técnico asignado. Para novedades comuníquese con Coordinación de Mantenimiento',
+                    'HU-4.4',
+                );
+            }
+
             $incidencia->solicitudesAclaracion()->where('estado', SolicitudAclaracion::PENDIENTE)->update(['estado' => SolicitudAclaracion::VENCIDA]);
             $incidencia->motivo_cancelacion = $motivo;
             $incidencia->usuario_cancelacion_id = $usuario->id;
@@ -133,16 +137,18 @@ class ReportanteService
     public function reabrir(Incidencia $incidencia, User $usuario, string $motivo): void
     {
         $this->exigirPropietario($incidencia, $usuario);
-        $evaluacion = $this->evaluarReapertura($incidencia);
-
-        if (! $evaluacion['permitido']) {
-            throw new ReglaNegocioException($evaluacion['motivo'], 'HU-4.5', 422, [
-                'alternativa' => 'CREAR_NUEVO_REPORTE',
-                'incidencia_origen' => $incidencia->codigo_ticket,
-            ]);
-        }
 
         DB::transaction(function () use ($incidencia, $usuario, $motivo): void {
+            $this->maquina->bloquear($incidencia);
+            $evaluacion = $this->evaluarReapertura($incidencia);
+
+            if (! $evaluacion['permitido']) {
+                throw new ReglaNegocioException($evaluacion['motivo'], 'HU-4.5', 422, [
+                    'alternativa' => 'CREAR_NUEVO_REPORTE',
+                    'incidencia_origen' => $incidencia->codigo_ticket,
+                ]);
+            }
+
             $destino = $incidencia->actividades()->exists() && $incidencia->tecnico_asignado_id !== null ? E::EnCorreccion : E::PendienteAsignacion;
             $alta = $this->catalogo->prioridadPorCodigo(CodigoPrioridad::Alta->value);
 
@@ -193,11 +199,13 @@ class ReportanteService
     {
         $this->exigirPropietarioOAdministrador($incidencia, $usuario);
 
-        if (! $incidencia->estaEn(E::PendienteConfirmacion)) {
-            throw ReglaNegocioException::conflicto('La solicitud no está pendiente de confirmación.', 'RN-040');
-        }
-
         DB::transaction(function () use ($incidencia, $usuario, $calificacion, $comentario): void {
+            $this->maquina->bloquear($incidencia);
+
+            if (! $incidencia->estaEn(E::PendienteConfirmacion)) {
+                throw ReglaNegocioException::conflicto('La solicitud no está pendiente de confirmación.', 'RN-040');
+            }
+
             $incidencia->calificacion_servicio = $calificacion;
             $incidencia->comentario_conformidad = $comentario;
             $incidencia->fecha_confirmacion = now();
@@ -225,11 +233,13 @@ class ReportanteService
     {
         $this->exigirPropietarioOAdministrador($incidencia, $usuario);
 
-        if (! $incidencia->estaEn(E::PendienteConfirmacion)) {
-            throw ReglaNegocioException::conflicto('La solicitud no está pendiente de confirmación.', 'RN-040');
-        }
-
         DB::transaction(function () use ($incidencia, $usuario, $motivo): void {
+            $this->maquina->bloquear($incidencia);
+
+            if (! $incidencia->estaEn(E::PendienteConfirmacion)) {
+                throw ReglaNegocioException::conflicto('La solicitud no está pendiente de confirmación.', 'RN-040');
+            }
+
             $incidencia->numero_reprocesos++;
 
             $this->maquina->transicionar(

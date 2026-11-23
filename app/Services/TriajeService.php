@@ -40,12 +40,16 @@ class TriajeService
 
     public function iniciarRevision(Incidencia $incidencia, User $usuario): void
     {
-        DB::transaction(fn () => $this->maquina->transicionar($incidencia, E::EnRevision, $usuario, 'Inicio de revisión por el gestor.', 'INICIO_REVISION'));
+        DB::transaction(function () use ($incidencia, $usuario): void {
+            $this->maquina->bloquear($incidencia);
+            $this->maquina->transicionar($incidencia, E::EnRevision, $usuario, 'Inicio de revisión por el gestor.', 'INICIO_REVISION');
+        });
     }
 
     public function solicitarAclaracion(Incidencia $incidencia, User $usuario, string $pregunta): SolicitudAclaracion
     {
         return DB::transaction(function () use ($incidencia, $usuario, $pregunta): SolicitudAclaracion {
+            $this->maquina->bloquear($incidencia);
             $ahora = now();
             $aclaracion = SolicitudAclaracion::create([
                 'incidencia_id' => $incidencia->id,
@@ -134,17 +138,19 @@ class TriajeService
             throw ValidationException::withMessages(['incidencia_principal_id' => 'Una incidencia no puede vincularse consigo misma. Seleccione una incidencia principal válida.']);
         }
 
-        $principal = Incidencia::query()->find($principalId);
+        DB::transaction(function () use ($incidencia, $usuario, $principalId, $observaciones): void {
+            $this->maquina->bloquear($incidencia);
 
-        if ($principal === null || $principal->estaEn(E::NoProcedente, E::Cancelada) || $principal->incidencia_principal_id !== null) {
-            throw ValidationException::withMessages(['incidencia_principal_id' => 'Seleccione una incidencia principal válida (no puede estar no procedente, cancelada ni ser a su vez un duplicado).']);
-        }
+            $principal = Incidencia::query()->find($principalId);
 
-        if (! $incidencia->estaEn(E::Registrada, E::EnRevision, E::EnClasificacion)) {
-            throw ReglaNegocioException::conflicto('Solo se pueden vincular como duplicadas incidencias en revisión o clasificación.', 'RN-013');
-        }
+            if ($principal === null || $principal->estaEn(E::NoProcedente, E::Cancelada) || $principal->incidencia_principal_id !== null) {
+                throw ValidationException::withMessages(['incidencia_principal_id' => 'Seleccione una incidencia principal válida (no puede estar no procedente, cancelada ni ser a su vez un duplicado).']);
+            }
 
-        DB::transaction(function () use ($incidencia, $usuario, $principal, $observaciones): void {
+            if (! $incidencia->estaEn(E::Registrada, E::EnRevision, E::EnClasificacion)) {
+                throw ReglaNegocioException::conflicto('Solo se pueden vincular como duplicadas incidencias en revisión o clasificación.', 'RN-013');
+            }
+
             DuplicadoIncidencia::create([
                 'incidencia_principal_id' => $principal->id,
                 'incidencia_duplicada_id' => $incidencia->id,
@@ -209,11 +215,13 @@ class TriajeService
      */
     public function clasificar(Incidencia $incidencia, User $usuario, array $datos): void
     {
-        if (! $incidencia->estaEn(E::EnRevision, E::EnClasificacion)) {
-            throw ReglaNegocioException::conflicto('La incidencia debe estar En revisión o En clasificación para clasificarse.', 'D07');
-        }
-
         DB::transaction(function () use ($incidencia, $usuario, $datos): void {
+            $this->maquina->bloquear($incidencia);
+
+            if (! $incidencia->estaEn(E::EnRevision, E::EnClasificacion)) {
+                throw ReglaNegocioException::conflicto('La incidencia debe estar En revisión o En clasificación para clasificarse.', 'D07');
+            }
+
             if (! $datos['procedente']) {
                 $incidencia->resultado_final_cierre = ResultadoCierre::NO_PROCEDENTE;
                 $incidencia->notas_cierre = $datos['motivo'];
@@ -249,11 +257,15 @@ class TriajeService
      */
     public function cambiarPrioridad(Incidencia $incidencia, User $usuario, Impacto $impacto, Urgencia $urgencia, string $justificacion): void
     {
-        if ($incidencia->estado_codigo->esTerminal() || $incidencia->prioridad_id === null) {
-            throw ReglaNegocioException::conflicto('Solo se puede cambiar la prioridad de incidencias clasificadas y en curso.', 'RN-020');
-        }
+        DB::transaction(function () use ($incidencia, $usuario, $impacto, $urgencia, $justificacion): void {
+            $this->maquina->bloquear($incidencia);
 
-        DB::transaction(fn () => $this->aplicarPrioridad($incidencia, $usuario, $impacto, $urgencia, $justificacion, 'REEVALUACION'));
+            if ($incidencia->estado_codigo->esTerminal() || $incidencia->prioridad_id === null) {
+                throw ReglaNegocioException::conflicto('Solo se puede cambiar la prioridad de incidencias clasificadas y en curso.', 'RN-020');
+            }
+
+            $this->aplicarPrioridad($incidencia, $usuario, $impacto, $urgencia, $justificacion, 'REEVALUACION');
+        });
     }
 
     /**
@@ -263,11 +275,13 @@ class TriajeService
      */
     public function evaluarRiesgo(Incidencia $incidencia, User $usuario, array $datos): EvaluacionRiesgo
     {
-        if ($incidencia->estado_codigo->esTerminal()) {
-            throw ReglaNegocioException::conflicto('La incidencia ya está finalizada.');
-        }
-
         return DB::transaction(function () use ($incidencia, $usuario, $datos): EvaluacionRiesgo {
+            $this->maquina->bloquear($incidencia);
+
+            if ($incidencia->estado_codigo->esTerminal()) {
+                throw ReglaNegocioException::conflicto('La incidencia ya está finalizada.');
+            }
+
             $riesgo = (bool) $datos['tiene_riesgo_inmediato'];
 
             $evaluacion = EvaluacionRiesgo::create([
@@ -317,6 +331,40 @@ class TriajeService
             }
 
             return $evaluacion;
+        });
+    }
+
+    /**
+     * Desactivación manual del protocolo de emergencia (R03/R07). No cambia la prioridad automáticamente
+     * ni altera solicitudes de recursos de emergencia ya creadas.
+     */
+    public function desactivarProtocolo(Incidencia $incidencia, User $usuario, string $motivo): void
+    {
+        DB::transaction(function () use ($incidencia, $usuario, $motivo): void {
+            $this->maquina->bloquear($incidencia);
+
+            if (! $incidencia->protocolo_emergencia_activo) {
+                throw ReglaNegocioException::conflicto('La incidencia no tiene el protocolo de emergencia activo.', 'RN-017');
+            }
+
+            $incidencia->protocolo_emergencia_activo = false;
+            $incidencia->save();
+
+            $this->auditoria->registrar(
+                tipoEvento: 'PROTOCOLO_EMERGENCIA_DESACTIVADO',
+                categoria: CategoriaEvento::Forense,
+                incidencia: $incidencia,
+                usuario: $usuario,
+                motivo: $motivo,
+            );
+
+            $this->notificador->aRoles(
+                $incidencia,
+                [Rol::Gestor, Rol::Coordinador],
+                'PROTOCOLO_EMERGENCIA_DESACTIVADO',
+                "Protocolo de emergencia desactivado en {$incidencia->codigo_ticket}",
+                $motivo,
+            );
         });
     }
 

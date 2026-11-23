@@ -51,6 +51,7 @@ Los ejemplos de respuesta salen de una ejecución real del flujo completo contra
 | `GET` | [`/catalogo/categorias`](#get-catalogo-categorias) | Categorías activas con sus subcategorías e indicadores (`exige_evidencia_fotografica`, `requiere_confirmacion_cierre`, `nivel_riesgo_base`). |
 | `GET` | [`/catalogo/prioridades`](#get-catalogo-prioridades) | Prioridades con sus metas SLA en horas hábiles. |
 | `POST` | [`/incidencias/evidencias/upload`](#post-incidencias-evidencias-upload) | Sube uno o varios archivos de evidencia. |
+| `DELETE` | [`/incidencias/evidencias/{evidencia}`](#delete-incidencias-evidencias-evidencia) | Elimina una evidencia huérfana (sin incidencia vinculada) cargada por el usuario autenticado. |
 | `GET` | [`/incidencias/coincidencias-activas`](#get-incidencias-coincidencias-activas) | Incidencias abiertas (E01-E11, últimos 15 días) en el mismo espacio y categoría, para advertir posibles duplicados antes de radicar. |
 | `POST` | [`/incidencias/radicar`](#post-incidencias-radicar) | Radica una incidencia nueva y genera su código `TKT-AAAA-######`. |
 | `POST` | [`/incidencias/{incidencia}/suscribir-seguimiento`](#post-incidencias-incidencia-suscribir-seguimiento) | Suscribe al usuario a una incidencia ajena para recibir sus actualizaciones (en lugar de radicar un duplicado). |
@@ -81,6 +82,7 @@ Los ejemplos de respuesta salen de una ejecución real del flujo completo contra
 | `POST` | [`/incidencias/{incidencia}/clasificar`](#post-incidencias-incidencia-clasificar) | Decide la procedencia. |
 | `PATCH` | [`/incidencias/{incidencia}/prioridad`](#patch-incidencias-incidencia-prioridad) | Recalcula la prioridad de una incidencia ya clasificada y deja el cambio en el historial (RN-020). |
 | `POST` | [`/incidencias/{incidencia}/evaluacion-riesgo`](#post-incidencias-incidencia-evaluacion-riesgo) | Registra la evaluación de riesgo. |
+| `POST` | [`/incidencias/{incidencia}/desactivar-protocolo`](#post-incidencias-incidencia-desactivar-protocolo) | Desactiva el protocolo de emergencia activo con motivo auditable (sin cambiar la prioridad automáticamente). |
 
 **E06 · Asignación y planificación**
 
@@ -328,7 +330,7 @@ Los 18 estados de D07. La máquina de estados del backend rechaza cualquier tran
 | **E15** Cerrada *(terminal salvo reapertura)* | La incidencia fue atendida y cerrada. | → **E13** En corrección · Creador · `POST /incidencias/{id}/reabrir` (si hubo intervención técnica)<br>→ **E05** Pendiente de asignación · Creador · `POST /incidencias/{id}/reabrir` (si no hubo intervención) |
 | **E16** No procedente *(terminal)* | El reporte no corresponde a infraestructura física y fue descartado. | Ninguna. |
 | **E17** Cancelada *(terminal)* | La solicitud fue cancelada con causa justificada. | Ninguna. |
-| **E18** Suspendida | La atención está detenida temporalmente por una causa documentada. | → **E10** Programada · R03 · `POST /incidencias/{id}/reanudar` con `estado_destino=E10`<br>→ **E11** En atención · R03 · `POST /incidencias/{id}/reanudar` con `estado_destino=E11`<br>→ **E17** Cancelada · R03 · `POST /incidencias/{id}/anular` |
+| **E18** Suspendida | La atención está detenida temporalmente por una causa documentada. | → **E06 / E07 / E08 / E09** · R03 · `POST /incidencias/{id}/reanudar` (vuelve exactamente al `estado_origen` de la suspensión)<br>→ **E10** Programada · R03 · `POST /incidencias/{id}/reanudar` (si se suspendió en E10 o E11; exige plan vigente o fecha/hora)<br>→ **E11** En atención · R03 · `POST /incidencias/{id}/reanudar` (si se suspendió en E10 o E11)<br>→ **E17** Cancelada · R03 · `POST /incidencias/{id}/anular` |
 
 Dos candados adicionales:
 
@@ -1616,6 +1618,26 @@ Sube uno o varios archivos de evidencia. Devuelve sus `id` para referenciarlos d
 - `401` Sin token o token vencido.
 - `403` Con `incidencia_id`: el usuario no puede adjuntar en esa etapa (p. ej. INSPECCION solo el técnico asignado o R03/R07).
 - `422` Validación de campos (`errors` trae el detalle por campo).
+
+<a id="delete-incidencias-evidencias-evidencia"></a>
+
+#### `DELETE /api/v1/incidencias/evidencias/{evidencia}`
+
+Elimina del disco y de la base de datos una evidencia huérfana (`incidencia_id` nulo) cargada previamente por el usuario autenticado.
+
+- **Roles (D09):** Cualquier usuario autenticado (solo el propietario de la carga, `usuario_carga_id`).
+- **Estado:** no cambia el estado de ninguna incidencia.
+- **Nota:** Además existe el comando programado `praxis:limpiar-evidencias-huerfanas` (diario a las 03:00) que elimina evidencias sin vincular con más de 24 horas.
+
+**Respuesta 204**
+
+Sin cuerpo (`No Content`).
+
+**Errores típicos**
+
+- `401` Sin token o token vencido.
+- `404` La evidencia no existe o pertenece a otro usuario (no revela su existencia).
+- `409` La evidencia ya está vinculada a una incidencia y no puede eliminarse (RN-042).
 
 <a id="get-incidencias-coincidencias-activas"></a>
 
@@ -2915,6 +2937,54 @@ Registra la evaluación de riesgo. Con riesgo inmediato activa el protocolo de e
 - `409` La incidencia ya terminó.
 - `422` Validación de campos (`errors` trae el detalle por campo).
 
+<a id="post-incidencias-incidencia-desactivar-protocolo"></a>
+
+#### `POST /api/v1/incidencias/{incidencia}/desactivar-protocolo`
+
+Desactiva manualmente el protocolo de emergencia activo en una incidencia, registra el evento `PROTOCOLO_EMERGENCIA_DESACTIVADO` en auditoría forense y notifica a gestión y coordinación. No cambia la prioridad automáticamente (el gestor puede reevaluarla después vía `PATCH /incidencias/{incidencia}/prioridad`) ni altera solicitudes de recursos de emergencia ya creadas. Al llegar a un estado terminal (`E15`, `E16`, `E17`), el protocolo también se desactiva automáticamente.
+
+- **Roles (D09):** R03 Coordinador de mantenimiento, R07 Administrador de plataforma
+- **Estado:** no cambia el estado de la incidencia.
+
+**Body**
+
+| Campo | Tipo | Reglas |
+|---|---|---|
+| `motivo` | string | Obligatorio, 10 a 1000 caracteres. |
+
+**Ejemplo de petición**
+
+```json
+{
+  "motivo": "Riesgo eléctrico contenido y zona asegurada; continúa flujo ordinario."
+}
+```
+
+**Respuesta 200**
+
+```json
+{
+  "mensaje": "Protocolo de emergencia desactivado.",
+  "data": {
+    "id": "01a184f0-fa65-737d-98bb-78a86c49a53a",
+    "codigo_ticket": "TKT-2026-000005",
+    "estado": {
+      "codigo": "E05",
+      "nombre": "Pendiente de asignación"
+    },
+    "protocolo_emergencia_activo": false
+  }
+}
+```
+
+**Errores típicos**
+
+- `401` Sin token o token vencido.
+- `403` El rol activo no está autorizado para la operación (D09) o `X-Active-Role` no es un rol del usuario.
+- `404` La incidencia no existe.
+- `409` La incidencia no tiene el protocolo de emergencia activo.
+- `422` Validación de campos (`errors` trae el detalle por campo).
+
 
 ---
 
@@ -3646,20 +3716,22 @@ Suspende temporalmente la atención con causa, motivo y condiciones para reanuda
 
 #### `POST /api/v1/incidencias/{incidencia}/reanudar`
 
-Reanuda una incidencia suspendida y registra cuánto duró la pausa.
+Reanuda una incidencia suspendida respetando la etapa en que se suspendió (`suspensiones.estado_origen`) y registra cuánto duró la pausa.
 
 - **Roles (D09):** R03 Coordinador de mantenimiento, R07 Administrador de plataforma
-- **Estado:** E18 → E10 o E11
+- **Estado:**
+  - Si `estado_origen` fue `E10` o `E11`: `E18 → E10` o `E11` (por defecto `E10` si se omite `estado_destino`). Si el destino es `E10`, debe existir un plan vigente o enviarse `fecha_programada`, `hora_inicio` y `hora_fin`.
+  - Si `estado_origen` fue `E06`, `E07`, `E08` o `E09`: `E18 → estado_origen` exactamente. Enviar un `estado_destino` distinto responde `422`.
 
 **Body**
 
 | Campo | Tipo | Reglas |
 |---|---|---|
-| `estado_destino` | string | Obligatorio: E10 o E11. |
+| `estado_destino` | string | Opcional (`E06`..`E11`). Si se omite, vuelve a `estado_origen` (o `E10` si el origen fue `E10`/`E11`). |
 | `observacion` | string | Obligatorio, 10 a 1000. |
-| `fecha_programada` | date | Opcional (con `hora_inicio`/`hora_fin`): reemplaza el plan vigente si se vuelve a E10. |
-| `hora_inicio` | HH:mm | Obligatorio con `fecha_programada`. |
-| `hora_fin` | HH:mm | Obligatorio con `fecha_programada`, posterior al inicio. |
+| `fecha_programada` | date | Opcional (obligatorio junto a `hora_inicio` y `hora_fin` si se reanuda a `E10` sin plan vigente; reemplaza el plan vigente si existe). |
+| `hora_inicio` | HH:mm | Obligatorio con `fecha_programada`/`hora_fin`. |
+| `hora_fin` | HH:mm | Obligatorio con `fecha_programada`/`hora_inicio`, posterior al inicio. |
 
 **Ejemplo de petición**
 

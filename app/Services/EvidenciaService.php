@@ -8,6 +8,7 @@ use App\Models\Evidencia;
 use App\Models\Incidencia;
 use App\Models\User;
 use App\Support\Parametro;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -146,6 +147,71 @@ class EvidenciaService
         ]);
 
         return Evidencia::query()->whereIn('id', $evidencias->pluck('id'))->get();
+    }
+
+    /**
+     * Elimina una evidencia huérfana (sin incidencia) perteneciente al usuario que la cargó.
+     */
+    public function eliminarHuerfana(Evidencia $evidencia, User $usuario): void
+    {
+        $archivo = DB::transaction(function () use ($evidencia, $usuario): array {
+            $registro = Evidencia::query()->whereKey($evidencia->id)->lockForUpdate()->first();
+
+            if ($registro === null || (int) $registro->usuario_carga_id !== (int) $usuario->id) {
+                throw (new ModelNotFoundException)->setModel(Evidencia::class, [$evidencia->id]);
+            }
+
+            if ($registro->incidencia_id !== null) {
+                throw ReglaNegocioException::conflicto('La evidencia ya está vinculada a una incidencia y no puede eliminarse (RN-042).', 'RN-042');
+            }
+
+            $datos = ['disco' => $registro->disco, 'ruta' => $registro->ruta_storage];
+            $registro->delete();
+
+            return $datos;
+        });
+
+        Storage::disk($archivo['disco'])->delete($archivo['ruta']);
+    }
+
+    /**
+     * Elimina del disco y de la base de datos las evidencias sin incidencia creadas hace más de $horas horas.
+     */
+    public function limpiarHuerfanas(int $horas = 24): int
+    {
+        $eliminadas = 0;
+        $limite = now()->subHours($horas);
+
+        Evidencia::query()
+            ->whereNull('incidencia_id')
+            ->where('created_at', '<', $limite)
+            ->chunkById(100, function (Collection $evidencias) use (&$eliminadas): void {
+                foreach ($evidencias as $evidencia) {
+                    $archivo = DB::transaction(function () use ($evidencia): ?array {
+                        $registro = Evidencia::query()
+                            ->whereKey($evidencia->id)
+                            ->whereNull('incidencia_id')
+                            ->lockForUpdate()
+                            ->first();
+
+                        if ($registro === null) {
+                            return null;
+                        }
+
+                        $datos = ['disco' => $registro->disco, 'ruta' => $registro->ruta_storage];
+                        $registro->delete();
+
+                        return $datos;
+                    });
+
+                    if ($archivo !== null) {
+                        Storage::disk($archivo['disco'])->delete($archivo['ruta']);
+                        $eliminadas++;
+                    }
+                }
+            });
+
+        return $eliminadas;
     }
 
     /**

@@ -1,3 +1,7 @@
+# SOLO PARA DESARROLLO LOCAL.
+# En un servidor de staging o producción NO uses este archivo tal cual: configura APP_DEBUG=false,
+# define credenciales propias (no las de prueba) y no publiques el puerto de PostgreSQL hacia el exterior.
+
 services:
   app:
     build:

@@ -32,13 +32,13 @@ class VerificacionService
      */
     public function aprobar(Incidencia $incidencia, User $usuario, array $datos): Verificacion
     {
-        $this->validarVerificable($incidencia, $usuario);
-
         if (collect($datos['criterios'] ?? [])->contains(fn (array $criterio) => ! $criterio['cumple'])) {
             throw new ReglaNegocioException('No se puede aprobar la intervención con criterios de aceptación incumplidos; registre el rechazo.', 'RN-034');
         }
 
         return DB::transaction(function () use ($incidencia, $usuario, $datos): Verificacion {
+            $this->maquina->bloquear($incidencia);
+            $this->validarVerificable($incidencia, $usuario);
             $verificacion = $this->crear($incidencia, $usuario, true, $datos);
             $requiereConfirmacion = (bool) $incidencia->categoria()->value('requiere_confirmacion_cierre');
 
@@ -63,9 +63,9 @@ class VerificacionService
      */
     public function rechazar(Incidencia $incidencia, User $usuario, array $datos): Verificacion
     {
-        $this->validarVerificable($incidencia, $usuario);
-
         return DB::transaction(function () use ($incidencia, $usuario, $datos): Verificacion {
+            $this->maquina->bloquear($incidencia);
+            $this->validarVerificable($incidencia, $usuario);
             $verificacion = $this->crear($incidencia, $usuario, false, $datos);
             $incidencia->numero_reprocesos++;
 
