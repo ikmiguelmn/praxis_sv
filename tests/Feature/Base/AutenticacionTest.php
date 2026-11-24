@@ -213,6 +213,8 @@ it('incluye en el correo de recuperación los minutos reales configurados en REC
         $correo = $notificacion->toMail($usuario);
         $contenido = implode(' ', [...$correo->introLines, ...$correo->outroLines]);
 
-        return str_contains($contenido, '45 minutos') && ! str_contains($contenido, '30 minutos');
+        return str_contains($contenido, '45 minutos')
+            && ! str_contains($contenido, '30 minutos')
+            && str_contains($contenido, 'Este es un correo automático, por favor no lo respondas.');
     });
 });

@@ -35,6 +35,7 @@ class RestablecerPasswordNotification extends Notification
             ->greeting('Hola '.$notifiable->name)
             ->line('Recibimos una solicitud para restablecer la contraseña de su cuenta institucional.')
             ->action('Restablecer contraseña', $url)
-            ->line("El enlace es de un solo uso y vence en {$minutos} minutos. Si usted no lo solicitó, ignore este mensaje.");
+            ->line("El enlace es de un solo uso y vence en {$minutos} minutos. Si usted no lo solicitó, ignore este mensaje.")
+            ->line('Este es un correo automático, por favor no lo respondas.');
     }
 }

@@ -31,6 +31,14 @@ services:
       PRAXIS_REFRESH_COOKIE_SAMESITE: lax
       # Nginx solo en IPv4: evita fallos en hosts sin IPv6 habilitado.
       NGINX_LISTEN_IP_PROTOCOL: ipv4
+      MAIL_MAILER: ${MAIL_MAILER:-log}
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-2525}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_SCHEME: ${MAIL_SCHEME:-}
+      MAIL_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:-no-responder@praxis.test}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-PRAXIS}
     volumes:
       - praxis_sv_storage:/var/www/html/storage/app
     depends_on:
