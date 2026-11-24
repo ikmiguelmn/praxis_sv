@@ -7,6 +7,7 @@ use App\Support\Parametro;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
+use Symfony\Component\Mime\Email;
 
 class RestablecerPasswordNotification extends Notification
 {
@@ -32,10 +33,17 @@ class RestablecerPasswordNotification extends Notification
 
         return (new MailMessage)
             ->subject('PRAXIS - Restablecimiento de contraseña')
-            ->greeting('Hola '.$notifiable->name)
-            ->line('Recibimos una solicitud para restablecer la contraseña de su cuenta institucional.')
-            ->action('Restablecer contraseña', $url)
-            ->line("El enlace es de un solo uso y vence en {$minutos} minutos. Si usted no lo solicitó, ignore este mensaje.")
-            ->line('Este es un correo automático, por favor no lo respondas.');
+            ->view(['emails.restablecer-password', 'emails.restablecer-password-texto'], [
+                'nombre' => $notifiable->name,
+                'url' => $url,
+                'minutos' => $minutos,
+                'urlInicio' => config('praxis.frontend_url', config('app.url')),
+            ])
+            ->withSymfonyMessage(function (Email $message): void {
+                $logoPath = public_path('images/praxis-logo.png');
+                if (is_file($logoPath)) {
+                    $message->embedFromPath($logoPath, 'praxis-logo');
+                }
+            });
     }
 }
