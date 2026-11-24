@@ -75,7 +75,7 @@ Todos con contraseña `Praxis*2026`:
 Por defecto (`MAIL_MAILER=log`), los correos se escriben en el log sin enviarse. Para habilitar el envío real por SMTP (por ejemplo con Mailjet):
 
 1. Configura en `.env` (nunca en `.env.example`):
-   - `MAIL_MAILER=smtp`, `MAIL_HOST`, `MAIL_PORT=587`, `MAIL_USERNAME`, `MAIL_PASSWORD`.
+   - `MAIL_MAILER=smtp` (o `MAIL_MAILER=mailjet` para enviar por API HTTPS en plataformas que bloquean el puerto `587`, como Railway), `MAIL_HOST`, `MAIL_PORT=587`, `MAIL_USERNAME`, `MAIL_PASSWORD`.
    - `MAIL_SCHEME=` (vacío cuando se usa puerto `587`).
    - `MAIL_FROM_ADDRESS` (debe ser un remitente verificado en el proveedor) y `MAIL_FROM_NAME`.
 2. `docker-compose.yml` toma estas variables automáticamente desde `.env` mediante interpolación; si no existe `.env`, mantiene `log` como valor por defecto.
