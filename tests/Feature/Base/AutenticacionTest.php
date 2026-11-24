@@ -9,6 +9,7 @@ use App\Notifications\RestablecerPasswordNotification;
 use App\Services\ParametrosService;
 use App\Support\Parametro;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification;
 
 function crearUsuarioLogin(Rol $rol = Rol::Tecnico, array $atributos = []): User
@@ -216,5 +217,33 @@ it('incluye en el correo de recuperación los minutos reales configurados en REC
         return str_contains($contenido, '45 minutos')
             && ! str_contains($contenido, '30 minutos')
             && str_contains($contenido, 'Este es un correo automático, por favor no lo responda.');
+    });
+});
+
+it('envía el correo de recuperación por la API HTTP de Mailjet con el logo embebido', function () {
+    Http::fake([
+        'https://api.mailjet.com/v3.1/send' => Http::response(['Messages' => [['Status' => 'success']]], 200),
+    ]);
+
+    config([
+        'mail.default' => 'mailjet',
+        'mail.mailers.mailjet.key' => 'test-key',
+        'mail.mailers.mailjet.secret' => 'test-secret',
+        'mail.from.address' => 'no-responder@praxis.test',
+        'mail.from.name' => 'PRAXIS',
+    ]);
+
+    $usuario = crearUsuarioLogin();
+
+    $this->postJson('/api/v1/auth/solicitar-recuperacion', ['email' => 'tecnico@ecci.edu.co'])->assertOk();
+
+    Http::assertSent(function ($request) {
+        $mensaje = $request['Messages'][0] ?? [];
+        $inlined = $mensaje['InlinedAttachments'][0] ?? [];
+
+        return $request->url() === 'https://api.mailjet.com/v3.1/send'
+            && ($mensaje['To'][0]['Email'] ?? null) === 'tecnico@ecci.edu.co'
+            && str_contains((string) ($mensaje['HTMLPart'] ?? ''), 'Crear nueva contraseña')
+            && ($inlined['ContentID'] ?? null) === 'praxis-logo';
     });
 });
