@@ -70,6 +70,19 @@ Todos con contraseña `Praxis*2026`:
 | `admin@praxis.test` | R07 Administrador de plataforma |
 | `docente.verificador@praxis.test` | R01 + R06 (multi-rol) |
 
+### Correo (recuperación de contraseña)
+
+Por defecto (`MAIL_MAILER=log`), los correos se escriben en el log sin enviarse. Para habilitar el envío real por SMTP (por ejemplo con Mailjet):
+
+1. Configura en `.env` (nunca en `.env.example`):
+   - `MAIL_MAILER=smtp`, `MAIL_HOST`, `MAIL_PORT=587`, `MAIL_USERNAME`, `MAIL_PASSWORD`.
+   - `MAIL_SCHEME=` (vacío cuando se usa puerto `587`).
+   - `MAIL_FROM_ADDRESS` (debe ser un remitente verificado en el proveedor) y `MAIL_FROM_NAME`.
+2. `docker-compose.yml` toma estas variables automáticamente desde `.env` mediante interpolación; si no existe `.env`, mantiene `log` como valor por defecto.
+3. Para probar:
+   - Levanta los contenedores (`docker compose up -d`) y verifica la configuración cargada con `docker compose exec app php artisan config:show mail.default` y `docker compose exec app php artisan config:show mail.from`.
+   - Solicita recuperación de contraseña en `POST /api/v1/auth/solicitar-recuperacion` con el correo de un usuario existente y revisa `docker compose logs app` para confirmar que no hay errores de SMTP.
+
 ## Setup local sin Docker para la API
 
 Requisitos: PHP 8.4 con `pdo_pgsql` (y `pdo_sqlite` para tests) y Composer. Se puede usar solo el Postgres de Docker:
