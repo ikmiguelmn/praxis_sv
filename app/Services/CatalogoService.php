@@ -199,4 +199,9 @@ class CatalogoService
         Cache::forget(self::CACHE_MATRIZ);
         Cache::forget(self::CACHE_PRIORIDADES);
     }
+
+    public function invalidarPermisos(): void
+    {
+        Cache::forget(self::CACHE_PERMISOS);
+    }
 }
