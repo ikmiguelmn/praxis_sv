@@ -29,18 +29,10 @@ enum Rol: string
     }
 
     /**
-     * Ruta por defecto tras el login según el rol (HU-1.1).
+     * Ruta por defecto tras el login: dashboard de inicio para todos los roles (HU-1.1).
      */
     public function rutaInicio(): string
     {
-        return match ($this) {
-            self::Reportante => '/panel',
-            self::Gestor => '/revision',
-            self::Coordinador => '/planificacion',
-            self::Tecnico => '/mis-tareas',
-            self::Autorizador => '/autorizaciones',
-            self::Verificador => '/verificacion',
-            self::Administrador => '/admin/usuarios',
-        };
+        return '/panel';
     }
 }
