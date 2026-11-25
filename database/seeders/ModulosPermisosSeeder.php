@@ -21,8 +21,6 @@ class ModulosPermisosSeeder extends Seeder
             ['MIS_SOLICITUDES', 'Mis solicitudes', '/mis-solicitudes', 'list', 'General', 30, ['R01' => 'T', 'R02' => 'T', 'R03' => 'T', 'R04' => 'T', 'R05' => 'T', 'R06' => 'T', 'R07' => 'T']],
             ['TRIAJE', 'Bandeja de triaje', '/revision', 'inbox', 'Gestión', 40, ['R02' => 'T', 'R03' => 'T', 'R07' => 'T']],
             ['PLANIFICACION', 'Planificación y asignación', '/planificacion', 'calendar', 'Gestión', 50, ['R03' => 'T', 'R07' => 'T']],
-            // Mis tareas y Verificación no se exponen a R03: el menú los mostraba en LECTURA
-            // pero las APIs solo admiten técnico (R04) y verificador (R06); al abrir daban 403.
             ['MIS_TAREAS', 'Mis tareas', '/mis-tareas', 'wrench', 'Operación', 60, ['R04' => 'T', 'R07' => 'T']],
             ['AUTORIZACIONES', 'Autorizaciones', '/autorizaciones', 'check-circle', 'Operación', 70, ['R03' => 'L', 'R05' => 'T', 'R07' => 'T']],
             ['VERIFICACION', 'Verificación', '/verificacion', 'shield-check', 'Operación', 80, ['R06' => 'T', 'R07' => 'T']],
