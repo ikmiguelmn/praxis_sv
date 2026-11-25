@@ -120,6 +120,7 @@ Route::prefix('v1')->group(function (): void {
 
         // E08: autorizaciones (R05; R03 dentro de su tope de autoridad delegada).
         Route::get('autorizaciones/pendientes', [RecursosController::class, 'pendientes'])->middleware('rol:R03,R05,R07');
+        Route::get('autorizaciones/historico', [RecursosController::class, 'historico'])->middleware('rol:R03,R05,R07');
         Route::post('solicitudes-recursos/{id}/dictamen', [RecursosController::class, 'dictamen'])->middleware('rol:R03,R05,R07');
 
         // E07: inspección, diagnóstico y ejecución (R04 asignado).

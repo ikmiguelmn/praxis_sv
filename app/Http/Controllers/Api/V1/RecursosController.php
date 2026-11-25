@@ -12,6 +12,7 @@ use App\Models\Incidencia;
 use App\Models\SolicitudRecursos;
 use App\Services\RecursosService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 
 class RecursosController extends Controller
 {
@@ -42,6 +43,31 @@ class RecursosController extends Controller
             ->get();
 
         return response()->json(['data' => $solicitudes->map(fn (SolicitudRecursos $solicitud) => $this->solicitud($solicitud, $solicitud->incidencia))->values()]);
+    }
+
+    /**
+     * GET /api/v1/autorizaciones/historico: solicitudes ya dictaminadas (R03, R05, R07).
+     */
+    public function historico(Request $request): JsonResponse
+    {
+        $resultado = strtoupper($request->string('resultado')->toString());
+
+        $pagina = SolicitudRecursos::query()
+            ->whereNotNull('fecha_dictamen')
+            ->when(in_array($resultado, ['APROBADA', 'RECHAZADA'], true), fn ($q) => $q->where('resultado_dictamen', $resultado))
+            ->with([
+                'detalles',
+                'solicitante:id,name',
+                'autorizador:id,name',
+                'incidencia:id,codigo_ticket,resumen,estado_codigo,prioridad_id',
+                'incidencia.prioridad',
+            ])
+            ->orderByDesc('fecha_dictamen')
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json($pagina->through(
+            fn (SolicitudRecursos $solicitud) => $this->solicitud($solicitud, $solicitud->incidencia),
+        ));
     }
 
     /**
@@ -95,15 +121,21 @@ class RecursosController extends Controller
             'es_emergencia' => $solicitud->es_emergencia,
             'resultado_dictamen' => $solicitud->resultado_dictamen,
             'justificacion_dictamen' => $solicitud->justificacion_dictamen,
+            'recursos_disponibles' => $solicitud->recursos_disponibles,
             'costo_total_estimado' => $solicitud->costoTotalEstimado(),
             'detalles' => $solicitud->detalles,
             'solicitante' => $solicitud->relationLoaded('solicitante') ? $solicitud->solicitante?->only(['id', 'name']) : null,
+            'autorizador' => $solicitud->relationLoaded('autorizador') ? $solicitud->autorizador?->only(['id', 'name']) : null,
             'fecha_solicitud' => $solicitud->created_at?->toIso8601String(),
+            'fecha_dictamen' => $solicitud->fecha_dictamen?->toIso8601String(),
             'incidencia' => [
                 'id' => $incidencia->id,
                 'codigo_ticket' => $incidencia->codigo_ticket,
                 'resumen' => $incidencia->resumen,
                 'estado' => ['codigo' => $incidencia->estado_codigo->value, 'nombre' => $incidencia->estado_codigo->nombre()],
+                'prioridad' => $incidencia->relationLoaded('prioridad') && $incidencia->prioridad
+                    ? $incidencia->prioridad->only(['id', 'codigo', 'nombre'])
+                    : null,
             ],
         ];
     }

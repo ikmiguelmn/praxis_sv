@@ -130,6 +130,55 @@ it('rechaza con suspensión documentada y exige justificación (RN-028, RN-031)'
     expect(Suspension::query()->where('incidencia_id', $incidencia->id)->value('causal'))->toBe('RECHAZO_AUTORIZACION');
 });
 
+it('lista el histórico de dictámenes y excluye pendientes; filtra por resultado', function () {
+    $aprobada = incidenciaConDiagnostico($this->tecnico);
+    $rechazada = incidenciaConDiagnostico($this->tecnico);
+    $pendiente = incidenciaConDiagnostico($this->tecnico);
+
+    $idAprobada = $this->comoRol($this->coordinador, Rol::Coordinador)->postJson("/api/v1/incidencias/{$aprobada->id}/solicitudes-recursos", solicitudRecursos(true))->json('data.id');
+    $idRechazada = $this->comoRol($this->coordinador, Rol::Coordinador)->postJson("/api/v1/incidencias/{$rechazada->id}/solicitudes-recursos", solicitudRecursos(true, 400000))->json('data.id');
+    $this->comoRol($this->coordinador, Rol::Coordinador)->postJson("/api/v1/incidencias/{$pendiente->id}/solicitudes-recursos", solicitudRecursos(true, 250000));
+
+    $this->comoRol($this->autorizador, Rol::Autorizador)
+        ->postJson("/api/v1/solicitudes-recursos/{$idAprobada}/dictamen", ['resultado' => 'APROBADA', 'recursos_disponibles' => true, 'justificacion' => 'Rubro disponible'])
+        ->assertOk();
+
+    $this->comoRol($this->autorizador, Rol::Autorizador)
+        ->postJson("/api/v1/solicitudes-recursos/{$idRechazada}/dictamen", [
+            'resultado' => 'RECHAZADA',
+            'accion_rechazo' => 'SUSPENDER',
+            'justificacion' => 'Sin cupo presupuestal',
+            'condiciones_reanudacion' => 'Nueva vigencia',
+        ])
+        ->assertOk();
+
+    $this->comoRol($this->autorizador, Rol::Autorizador)
+        ->getJson('/api/v1/autorizaciones/historico')
+        ->assertOk()
+        ->assertJsonPath('meta.total', 2)
+        ->assertJsonPath('data.0.autorizador.id', $this->autorizador->id)
+        ->assertJsonStructure(['data' => [['fecha_dictamen', 'resultado_dictamen', 'autorizador' => ['id', 'name']]]]);
+
+    $ids = collect($this->comoRol($this->autorizador, Rol::Autorizador)->getJson('/api/v1/autorizaciones/historico')->json('data'))->pluck('id');
+    expect($ids)->toContain($idAprobada, $idRechazada)->not->toContain(
+        SolicitudRecursos::query()->where('incidencia_id', $pendiente->id)->value('id'),
+    );
+
+    $this->comoRol($this->autorizador, Rol::Autorizador)
+        ->getJson('/api/v1/autorizaciones/historico?resultado=APROBADA')
+        ->assertOk()
+        ->assertJsonPath('meta.total', 1)
+        ->assertJsonPath('data.0.id', $idAprobada);
+
+    $this->comoRol($this->usuarioConRol(Rol::Gestor), Rol::Gestor)
+        ->getJson('/api/v1/autorizaciones/historico')
+        ->assertForbidden();
+
+    $this->comoRol($this->coordinador, Rol::Coordinador)
+        ->getJson('/api/v1/autorizaciones/historico')
+        ->assertOk();
+});
+
 it('deniega el dictamen a roles sin permiso y al coordinador por encima de su tope delegado', function () {
     $incidencia = incidenciaConDiagnostico($this->tecnico);
     $solicitud = $this->comoRol($this->coordinador, Rol::Coordinador)->postJson("/api/v1/incidencias/{$incidencia->id}/solicitudes-recursos", solicitudRecursos(true, 5000000))->json('data.id');
