@@ -41,7 +41,7 @@ it('redirige a la ruta por defecto del rol cuando el returnUrl no es una ruta in
 
     $this->postJson('/api/v1/auth/login', ['email' => 'tecnico@ecci.edu.co', 'password' => 'Clave*Segura1', 'return_url' => '//sitio-malicioso.com'])
         ->assertOk()
-        ->assertJsonPath('redirect_to', '/autorizaciones');
+        ->assertJsonPath('redirect_to', '/panel');
 });
 
 it('responde con un mensaje genérico ante correo inexistente o contraseña incorrecta y audita el fallo', function (string $email, string $password) {
