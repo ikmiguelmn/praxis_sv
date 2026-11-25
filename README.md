@@ -70,6 +70,20 @@ Todos con contraseña `Praxis*2026`:
 | `admin@praxis.test` | R07 Administrador de plataforma |
 | `docente.verificador@praxis.test` | R01 + R06 (multi-rol) |
 
+### Datos demo por estado (opcional)
+
+Tras el seed normal, puedes cargar **un ticket completo por cada estado (E01–E18)** con historial, diagnóstico, plan, recursos, actividad y verificación según la etapa:
+
+```bash
+# Local Docker
+docker compose exec app php artisan db:seed --class=DemoEstadosSeeder
+
+# Railway / entornos sin interacción
+php artisan db:seed --class=DemoEstadosSeeder --force
+```
+
+Los tickets usan códigos `TKT-{año}-990001` … `990018`. Si ya existen, el seeder los omite (idempotente). No forma parte de `DatabaseSeeder` para no llenar cada deploy.
+
 ### Correo (recuperación de contraseña)
 
 Por defecto (`MAIL_MAILER=log`), los correos se escriben en el log sin enviarse. Para habilitar el envío real por SMTP (por ejemplo con Mailjet):
