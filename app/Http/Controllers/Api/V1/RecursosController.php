@@ -65,9 +65,19 @@ class RecursosController extends Controller
             ->orderByDesc('fecha_dictamen')
             ->paginate($request->integer('per_page', 20));
 
-        return response()->json($pagina->through(
+        $pagina->getCollection()->transform(
             fn (SolicitudRecursos $solicitud) => $this->solicitud($solicitud, $solicitud->incidencia),
-        ));
+        );
+
+        return response()->json([
+            'data' => $pagina->items(),
+            'meta' => [
+                'current_page' => $pagina->currentPage(),
+                'last_page' => $pagina->lastPage(),
+                'per_page' => $pagina->perPage(),
+                'total' => $pagina->total(),
+            ],
+        ]);
     }
 
     /**
